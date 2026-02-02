@@ -636,9 +636,7 @@ else if wasBreakout
     if breakoutBarCount >= 3
         wasBreakout := false
 
-falseBreakout = wasBreakout and breakoutBarCount >= 2 and 
-                ((breakAbove[breakoutBarCount] and close < ta.highest(high, 5)[breakoutBarCount+1]) or
-                 (breakBelow[breakoutBarCount] and close > ta.lowest(low, 5)[breakoutBarCount+1]))
+falseBreakout = wasBreakout and breakoutBarCount >= 2 and ((breakAbove[breakoutBarCount] and close < ta.highest(high, 5)[breakoutBarCount+1]) or (breakBelow[breakoutBarCount] and close > ta.lowest(low, 5)[breakoutBarCount+1]))
 
 // Expiry Day Check (Thursday for India)
 isThursday = dayofweek(time, "Asia/Kolkata") == dayofweek.thursday
