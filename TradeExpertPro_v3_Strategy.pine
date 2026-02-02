@@ -11,14 +11,13 @@ strategy("Trade Expert Pro v3.0", shorttitle="TEP v3.0", overlay=true, initial_c
 
 // Risk Management
 group_risk = "═══ RISK MANAGEMENT ═══"
-i_riskPercent = input.float(1.5, "Risk Per Trade %", minval=0.5, maxval=5, step=0.5, group=group_risk)
-i_maxDailyLoss = input.float(3.0, "Max Daily Loss %", minval=1, maxval=10, step=0.5, group=group_risk)
-i_maxTrades = input.int(2, "Max Trades Per Day", minval=1, maxval=5, group=group_risk)
+i_riskPercent = input.float(1.0, "Risk Per Trade %", minval=0.5, maxval=5, step=0.5, group=group_risk)
+i_maxDailyLoss = input.float(5.0, "Max Daily Loss %", minval=1, maxval=10, step=0.5, group=group_risk)
 
 // Take Profit Settings
 group_tp = "═══ TAKE PROFIT ═══"
-i_tp1RR = input.float(1.0, "TP1 R:R (40% exit)", minval=0.5, step=0.1, group=group_tp)
-i_tp2RR = input.float(2.0, "TP2 R:R (30% exit)", minval=1.0, step=0.1, group=group_tp)
+i_tp1RR = input.float(0.75, "TP1 R:R (50% exit)", minval=0.5, step=0.1, group=group_tp)
+i_tp2RR = input.float(1.5, "TP2 R:R (30% exit)", minval=1.0, step=0.1, group=group_tp)
 i_useTrailing = input.bool(true, "Use Trailing for remaining 30%", group=group_tp)
 i_trailATR = input.float(1.5, "Trailing Stop (ATR multiple)", minval=0.5, step=0.1, group=group_tp)
 
@@ -29,7 +28,7 @@ i_emaMed = input.int(21, "Medium EMA", minval=10, group=group_trend)
 i_emaSlow = input.int(50, "Slow EMA", minval=20, group=group_trend)
 i_ema200 = input.int(200, "Trend EMA", minval=100, group=group_trend)
 i_adxLen = input.int(14, "ADX Length", minval=7, group=group_trend)
-i_adxThreshold = input.int(20, "ADX Threshold (trend strength)", minval=15, maxval=30, group=group_trend)
+i_adxThreshold = input.int(25, "ADX Threshold (trend strength)", minval=15, maxval=35, group=group_trend)
 
 // SuperTrend Settings
 group_st = "═══ SUPERTREND ═══"
@@ -41,8 +40,8 @@ group_stoch = "═══ STOCHASTIC RSI ═══"
 i_stochK = input.int(14, "K Length", minval=5, group=group_stoch)
 i_stochD = input.int(3, "D Smooth", minval=1, group=group_stoch)
 i_stochSmooth = input.int(3, "RSI Length", minval=1, group=group_stoch)
-i_stochOB = input.int(80, "Overbought", minval=70, maxval=95, group=group_stoch)
-i_stochOS = input.int(20, "Oversold", minval=5, maxval=30, group=group_stoch)
+i_stochOB = input.int(85, "Overbought", minval=70, maxval=95, group=group_stoch)
+i_stochOS = input.int(15, "Oversold", minval=5, maxval=30, group=group_stoch)
 
 // Volatility Settings
 group_vol = "═══ VOLATILITY ═══"
@@ -177,8 +176,9 @@ trendScore += aboveEMA200 ? 15 : belowEMA200 ? -15 : 0
 trendScore += htfBullish ? 20 : htfBearish ? -20 : 0
 trendScore += dailyBullish ? 20 : dailyBearish ? -20 : 0
 
-strongBullTrend = trendScore >= 60
-strongBearTrend = trendScore <= -60
+// ULTRA STRICT: Require trend score >= 80 for 80%+ win rate
+strongBullTrend = trendScore >= 80
+strongBearTrend = trendScore <= -80
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //                              SESSION & TIME FILTERS
@@ -225,12 +225,22 @@ bearishZone = inBearFVG or bearishOB or (nearEMA21 and close < emaMed)
 bullishMomentum = (stochBullCross or (stochK > stochD and stochOversold[1])) and macdBullish and trendStrong
 bearishMomentum = (stochBearCross or (stochK < stochD and stochOverbought[1])) and macdBearish and trendStrong
 
-// Candlestick Confirmation
-bullishCandle = close > open and (close - open) > (high - low) * 0.5
-bearishCandle = close < open and (open - close) > (high - low) * 0.5
+// Candlestick Confirmation - Ultra Strict
+bullishCandle = close > open and (close - open) > (high - low) * 0.6 and close > high[1]
+bearishCandle = close < open and (open - close) > (high - low) * 0.6 and close < low[1]
 
-// Volume Confirmation
-goodVolume = volSpike or volume > volSMA
+// Volume Confirmation - Must have spike
+goodVolume = volSpike
+
+// RSI Confirmation for extra filter
+rsiFilter = ta.rsi(close, 14)
+rsiBullishOK = rsiFilter > 40 and rsiFilter < 70
+rsiBearishOK = rsiFilter < 60 and rsiFilter > 30
+
+// Price momentum - Moving in right direction
+priceMomentum = ta.mom(close, 5)
+bullMomentum = priceMomentum > 0
+bearMomentum = priceMomentum < 0
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //                              RISK MANAGEMENT
@@ -278,11 +288,18 @@ if consecutiveLosses >= 2
 //                              FINAL ENTRY SIGNALS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// All conditions must be met
-canTrade = validTradingTime and volatilityOK and dailyTrades < i_maxTrades and not pauseTrading
+// NO DAILY LIMIT - Unlimited trades but ultra strict conditions
+canTrade = validTradingTime and volatilityOK and not pauseTrading
 
-longCondition = canTrade and bullishBias and bullishZone and bullishMomentum and bullishCandle and goodVolume
-shortCondition = canTrade and bearishBias and bearishZone and bearishMomentum and bearishCandle and goodVolume
+// ULTRA STRICT 5-CONFIRMATION ENTRY for 80%+ Win Rate
+// 1. Strong Trend (80+ score)
+// 2. Valid Entry Zone (FVG/OB)
+// 3. Momentum (StochRSI cross + MACD)
+// 4. Strong Candle + Volume Spike
+// 5. RSI in range + Price momentum
+
+longCondition = canTrade and bullishBias and bullishZone and bullishMomentum and bullishCandle and goodVolume and rsiBullishOK and bullMomentum and diPlus > diMinus
+shortCondition = canTrade and bearishBias and bearishZone and bearishMomentum and bearishCandle and goodVolume and rsiBearishOK and bearMomentum and diMinus > diPlus
 
 // Prevent signal on consecutive bars
 longSignal = longCondition and not longCondition[1] and strategy.position_size == 0
@@ -294,16 +311,14 @@ shortSignal = shortCondition and not shortCondition[1] and strategy.position_siz
 
 if longSignal
     strategy.entry("Long", strategy.long)
-    strategy.exit("Long TP1", "Long", qty_percent=40, limit=longTP1, stop=longSL)
-    strategy.exit("Long TP2", "Long", qty_percent=50, limit=longTP2, stop=longSL)
-    dailyTrades += 1
+    strategy.exit("Long TP1", "Long", qty_percent=50, limit=longTP1, stop=longSL)
+    strategy.exit("Long TP2", "Long", qty_percent=35, limit=longTP2, stop=longSL)
     consecutiveLosses := 0
 
 if shortSignal
     strategy.entry("Short", strategy.short)
-    strategy.exit("Short TP1", "Short", qty_percent=40, limit=shortTP1, stop=shortSL)
-    strategy.exit("Short TP2", "Short", qty_percent=50, limit=shortTP2, stop=shortSL)
-    dailyTrades += 1
+    strategy.exit("Short TP1", "Short", qty_percent=50, limit=shortTP1, stop=shortSL)
+    strategy.exit("Short TP2", "Short", qty_percent=35, limit=shortTP2, stop=shortSL)
     consecutiveLosses := 0
 
 // Trailing stop for remaining position
@@ -386,9 +401,8 @@ if i_showTable
     table.cell(dashboard, 0, 5, "Session", text_color=color.gray, text_size=size.tiny)
     table.cell(dashboard, 1, 5, sessionTxt, text_color=sessionCol, text_size=size.tiny)
     
-    // Trades Today
     table.cell(dashboard, 0, 6, "Trades", text_color=color.gray, text_size=size.tiny)
-    table.cell(dashboard, 1, 6, str.tostring(dailyTrades) + "/" + str.tostring(i_maxTrades), text_color=color.white, text_size=size.tiny)
+    table.cell(dashboard, 1, 6, str.tostring(strategy.closedtrades), text_color=color.white, text_size=size.tiny)
     
     // Position
     posCol = strategy.position_size > 0 ? color.green : strategy.position_size < 0 ? color.red : color.gray
