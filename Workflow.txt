@@ -1,0 +1,96 @@
+Build a modular trading workflow called "Silver Expert Core" for Silver (XAGUSD / MCX Silver).
+
+The workflow must be rule-based, non-repainting, and structured as a pipeline with clear IF/ELSE gates.
+
+INPUT DATA:
+- Symbol, Time, OHLC, Volume
+- Multi-timeframe support (HTF: Daily or 4H, LTF: 15m or 5m)
+
+WORKFLOW STRUCTURE:
+
+1. Market Validation Block
+- Allow execution only if symbol is Silver (XAGUSD or MCX Silver)
+- Reject if spread is above a max threshold
+- Reject if candle range is below minimum volatility
+
+2. Volatility & Session Block
+- Calculate ATR(14)
+- Define volatility states: LOW, NORMAL, HIGH
+- Block trades during extremely low volatility
+- Detect session based on time: Asian, London, New York
+
+3. Higher Timeframe Bias Block
+- Use EMA 50 and EMA 200 on HTF
+- Detect market structure (HH/HL or LH/LL)
+- Use ADX to validate trend strength
+- Output HTF_BIAS as BULLISH, BEARISH, or NEUTRAL
+- If HTF_BIAS is NEUTRAL, stop workflow
+
+4. Market Regime Detection
+- If ADX < 18 → RANGE MODE
+- If ADX > 22 and structure valid → TREND MODE
+- Route workflow using a switch node into Trend or Range pipelines
+
+TREND MODE PIPELINE:
+5. Key Level Engine
+- Auto-detect Previous Day High/Low
+- Auto-detect Previous Week High/Low
+- Session Open price
+- Psychological levels (00 / 50)
+- Allow setups only when price is within tolerance of a key level
+
+6. Trend Setup Filter
+- Trade only in direction of HTF_BIAS
+- Require pullback into EMA zone or key level
+- Block trades if an opposite HTF level exists before target
+
+7. Entry Confirmation Engine
+- Confirmation signals:
+  - RSI rebound or divergence
+  - Volume spike on rejection
+  - Strong candle close (body dominance)
+  - Micro structure break on LTF
+- Count confirmations
+- Require confirmation score >= threshold to continue
+
+8. Manipulation / Trap Filter
+- Detect long wick beyond level
+- Detect immediate reclaim with weak follow-through
+- If trap detected, delay entry until confirmation candle
+
+9. Risk Management Engine
+- Stop Loss at structure or wick extreme
+- Take Profit 1 at nearest opposite key level
+- Take Profit 2 based on minimum risk-reward (1:2 or better)
+- Reject trades with RR below minimum
+
+10. Trade Quality Scoring
+- Score trades from 0–100 using:
+  - HTF trend strength
+  - Key level quality
+  - Confirmation count
+  - Volatility state
+  - Session alignment
+- Allow trades only if score >= 60
+
+11. Final Signal Output
+- Output BUY or SELL signal
+- Include SL, TP, RR, Trade Quality %, Volatility state
+- Trigger alert with full context
+
+RANGE MODE PIPELINE:
+- Detect range high and range low
+- Allow entries only at range extremes
+- Require rejection wick + RSI divergence + volume absorption
+- Apply same risk and trade quality logic
+- Flag reduced position size for range trades
+
+GLOBAL NO-TRADE CONDITIONS:
+- Major HTF level directly between entry and target
+- News or extreme volatility window
+- Ultra-low volume conditions
+
+OUTPUT:
+- Clean, non-noisy BUY/SELL signals
+- NO TRADE state when conditions are not met
+- Alert messages with full trade context

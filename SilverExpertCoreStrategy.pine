@@ -1,0 +1,433 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Silver Expert Core Strategy v3.0 - OPTIMIZED FOR SILVER
+
+//@version=5
+strategy("Silver Expert Core Strategy v3", shorttitle="SEC Strategy v3", overlay=true, 
+     initial_capital=100000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=5,
+     commission_type=strategy.commission.percent,
+     commission_value=0.01,
+     slippage=2,
+     pyramiding=0,
+     process_orders_on_close=false,
+     calc_on_every_tick=false,
+     max_lines_count=500,
+     max_labels_count=500)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                    SILVER EXPERT CORE - STRATEGY v3.0
+//                      OPTIMIZED FOR SILVER TRADING
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// OPTIMIZATION PRINCIPLES:
+// 1. Trade WITH the trend (HTF confirmation)
+// 2. Enter on pullbacks to dynamic support/resistance
+// 3. Trade during HIGH LIQUIDITY sessions (London/NY overlap)
+// 4. Use multiple confirmations (trend + momentum + structure)
+// 5. Tight risk management with proper RR
+// 6. Filter out low-probability setups
+//
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │                      STRATEGY SETTINGS                                       │
+// └─────────────────────────────────────────────────────────────────────────────┘
+
+group_strategy = "═══ Strategy Settings ═══"
+i_useFixedQty = input.bool(true, "Use Fixed Quantity", group=group_strategy)
+i_fixedQty = input.int(1, "Fixed Quantity (Lots/Contracts)", minval=1, maxval=100, group=group_strategy)
+i_maxTradesPerDay = input.int(3, "Max Trades Per Day", minval=1, maxval=10, group=group_strategy, tooltip="Limit overtrading")
+
+group_backtest = "═══ Backtest Settings ═══"
+i_startDate = input.time(timestamp("2020-01-01"), "Start Date", group=group_backtest)
+i_endDate = input.time(timestamp("2030-12-31"), "End Date", group=group_backtest)
+i_tradeLong = input.bool(true, "Allow Long Trades", group=group_backtest)
+i_tradeShort = input.bool(true, "Allow Short Trades", group=group_backtest)
+
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │                      OPTIMIZED PARAMETERS                                    │
+// └─────────────────────────────────────────────────────────────────────────────┘
+
+group_trend = "═══ Trend Detection (OPTIMIZED) ═══"
+i_emaFast = input.int(21, "EMA Fast Period", minval=5, maxval=50, group=group_trend, tooltip="21 EMA for short-term trend")
+i_emaMid = input.int(55, "EMA Mid Period", minval=20, maxval=100, group=group_trend, tooltip="55 EMA for medium-term trend")
+i_emaSlow = input.int(200, "EMA Slow Period", minval=100, maxval=300, group=group_trend, tooltip="200 EMA for major trend")
+i_htf = input.timeframe("60", "Higher Timeframe", group=group_trend, tooltip="1H recommended for 15m chart")
+
+group_momentum = "═══ Momentum Filters (OPTIMIZED) ═══"
+i_rsiPeriod = input.int(14, "RSI Period", minval=5, maxval=21, group=group_momentum)
+i_rsiOversold = input.int(35, "RSI Oversold", minval=20, maxval=45, group=group_momentum)
+i_rsiOverbought = input.int(65, "RSI Overbought", minval=55, maxval=80, group=group_momentum)
+i_useMACD = input.bool(true, "Use MACD Confirmation", group=group_momentum)
+i_useMomentumFilter = input.bool(true, "Use Momentum Filter", group=group_momentum)
+
+group_session = "═══ Session Filter (CRITICAL) ═══"
+i_tradeLondon = input.bool(true, "Trade London Session", group=group_session, tooltip="08:00-16:00 UTC")
+i_tradeNY = input.bool(true, "Trade New York Session", group=group_session, tooltip="13:00-21:00 UTC")
+i_tradeOverlap = input.bool(true, "Trade London/NY Overlap", group=group_session, tooltip="13:00-16:00 UTC - BEST TIME")
+i_tradeAsian = input.bool(false, "Trade Asian Session", group=group_session, tooltip="00:00-08:00 UTC - Usually low volatility")
+i_showSessionZones = input.bool(true, "Show Session Zones", group=group_session)
+
+group_entry = "═══ Entry Rules (OPTIMIZED) ═══"
+i_entryType = input.string("Pullback", "Entry Type", options=["Pullback", "Breakout", "Both"], group=group_entry, tooltip="Pullback entries have higher win rate")
+i_requireEMAStack = input.bool(true, "Require EMA Stack (21>55>200)", group=group_entry, tooltip="Only trade when EMAs are properly stacked")
+i_requireHTFAlignment = input.bool(true, "Require HTF Trend Alignment", group=group_entry)
+i_minCandleBody = input.float(0.4, "Min Candle Body Ratio", minval=0.2, maxval=0.8, group=group_entry, tooltip="Filter out doji/indecision candles")
+
+group_risk = "═══ Risk Management (OPTIMIZED) ═══"
+i_atrPeriod = input.int(14, "ATR Period", minval=7, maxval=21, group=group_risk)
+i_slATRMult = input.float(1.2, "SL ATR Multiplier", minval=0.5, maxval=3.0, step=0.1, group=group_risk, tooltip="Tighter SL = better RR")
+i_tpATRMult = input.float(2.4, "TP ATR Multiplier", minval=1.5, maxval=5.0, step=0.1, group=group_risk, tooltip="At least 2:1 RR")
+i_useTrailingSL = input.bool(true, "Use Trailing Stop", group=group_risk)
+i_trailATRMult = input.float(1.5, "Trailing Stop ATR Mult", minval=0.5, maxval=3.0, step=0.1, group=group_risk)
+i_breakEvenATR = input.float(1.0, "Move to Breakeven at ATR", minval=0.5, maxval=2.0, step=0.1, group=group_risk)
+
+group_filter = "═══ Trade Filters (OPTIMIZED) ═══"
+i_minVolatility = input.float(0.3, "Min Volatility (ATR%)", minval=0.1, maxval=1.0, step=0.1, group=group_filter)
+i_maxVolatility = input.float(2.0, "Max Volatility (ATR Mult)", minval=1.0, maxval=5.0, step=0.1, group=group_filter)
+i_avoidNews = input.bool(true, "Avoid First 5 Bars of Session", group=group_filter, tooltip="Avoid initial volatility spikes")
+i_requireVolume = input.bool(true, "Require Volume Confirmation", group=group_filter)
+i_volMult = input.float(1.2, "Min Volume Multiplier", minval=1.0, maxval=2.0, step=0.1, group=group_filter)
+
+group_visual = "═══ Visual Settings ═══"
+i_showTable = input.bool(true, "Show Status Table", group=group_visual)
+i_showEMAs = input.bool(true, "Show EMAs", group=group_visual)
+i_showSignals = input.bool(true, "Show Entry Signals", group=group_visual)
+i_showLevels = input.bool(true, "Show Key Levels", group=group_visual)
+
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │                              CONSTANTS                                       │
+// └─────────────────────────────────────────────────────────────────────────────┘
+
+color COLOR_BUY = #00E676
+color COLOR_SELL = #FF5252
+color COLOR_NEUTRAL = #FFD740
+color COLOR_EMA_FAST = #2196F3
+color COLOR_EMA_MID = #FF9800
+color COLOR_EMA_SLOW = #9C27B0
+
+color COLOR_LONDON = color.new(#2196F3, 92)
+color COLOR_NY = color.new(#FF9800, 92)
+color COLOR_OVERLAP = color.new(#4CAF50, 88)
+color COLOR_ASIAN = color.new(#9C27B0, 95)
+
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │                        CORE CALCULATIONS                                     │
+// └─────────────────────────────────────────────────────────────────────────────┘
+
+// ATR
+atr = ta.atr(i_atrPeriod)
+avgATR = ta.sma(atr, 50)
+
+// EMAs - Triple EMA System
+emaFast = ta.ema(close, i_emaFast)
+emaMid = ta.ema(close, i_emaMid)
+emaSlow = ta.ema(close, i_emaSlow)
+
+// HTF EMAs
+htfEmaFast = request.security(syminfo.tickerid, i_htf, ta.ema(close, i_emaFast), lookahead=barmerge.lookahead_off)
+htfEmaMid = request.security(syminfo.tickerid, i_htf, ta.ema(close, i_emaMid), lookahead=barmerge.lookahead_off)
+
+// RSI
+rsi = ta.rsi(close, i_rsiPeriod)
+
+// MACD
+[macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
+macdBullish = macdLine > signalLine and histLine > histLine[1]
+macdBearish = macdLine < signalLine and histLine < histLine[1]
+
+// Momentum (Rate of Change)
+momentum = ta.mom(close, 10)
+momentumUp = momentum > 0 and momentum > momentum[1]
+momentumDown = momentum < 0 and momentum < momentum[1]
+
+// Volume
+avgVolume = ta.sma(volume, 20)
+volumeOk = not i_requireVolume or volume > avgVolume * i_volMult
+
+// Candle Analysis
+bodySize = math.abs(close - open)
+totalRange = high - low
+bodyRatio = totalRange > 0 ? bodySize / totalRange : 0
+isBullishCandle = close > open and bodyRatio >= i_minCandleBody
+isBearishCandle = close < open and bodyRatio >= i_minCandleBody
+
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │                        SESSION DETECTION                                     │
+// └─────────────────────────────────────────────────────────────────────────────┘
+
+utcHour = hour(time, "UTC")
+
+isAsianSession = utcHour >= 0 and utcHour < 8
+isLondonSession = utcHour >= 8 and utcHour < 16
+isNYSession = utcHour >= 13 and utcHour < 21
+isOverlapSession = utcHour >= 13 and utcHour < 16
+
+// Session trading allowed
+sessionAllowed = (i_tradeAsian and isAsianSession) or 
+                 (i_tradeLondon and isLondonSession and not isOverlapSession) or 
+                 (i_tradeNY and isNYSession and not isOverlapSession) or 
+                 (i_tradeOverlap and isOverlapSession)
+
+// Avoid first bars of session (news/volatility)
+var int barsInSession = 0
+sessionStart = (isLondonSession and not isLondonSession[1]) or (isNYSession and not isNYSession[1])
+if sessionStart
+    barsInSession := 0
+else
+    barsInSession += 1
+avoidEarlyBars = i_avoidNews and barsInSession < 5
+
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │                        TREND ANALYSIS                                        │
+// └─────────────────────────────────────────────────────────────────────────────┘
+
+// EMA Stack (Perfect Trend Alignment)
+bullishEMAStack = emaFast > emaMid and emaMid > emaSlow
+bearishEMAStack = emaFast < emaMid and emaMid < emaSlow
+emaStackOk = not i_requireEMAStack or bullishEMAStack or bearishEMAStack
+
+// HTF Trend
+htfBullish = htfEmaFast > htfEmaMid
+htfBearish = htfEmaFast < htfEmaMid
+htfAlignmentOk = not i_requireHTFAlignment or 
+                 (bullishEMAStack and htfBullish) or 
+                 (bearishEMAStack and htfBearish)
+
+// Overall Trend
+isBullishTrend = bullishEMAStack and close > emaFast
+isBearishTrend = bearishEMAStack and close < emaFast
+
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │                        ENTRY SIGNALS                                         │
+// └─────────────────────────────────────────────────────────────────────────────┘
+
+// Pullback Entry: Price pulls back to EMA zone then bounces
+pullbackToBullishEMA = low <= emaMid and close > emaFast and close > open
+pullbackToBearishEMA = high >= emaMid and close < emaFast and close < open
+
+// Breakout Entry: Price breaks above/below recent structure
+recentHigh = ta.highest(high, 10)[1]
+recentLow = ta.lowest(low, 10)[1]
+bullishBreakout = close > recentHigh and close > emaFast
+bearishBreakout = close < recentLow and close < emaFast
+
+// Entry Logic based on type
+bullishEntry = i_entryType == "Pullback" ? pullbackToBullishEMA : 
+               i_entryType == "Breakout" ? bullishBreakout : 
+               (pullbackToBullishEMA or bullishBreakout)
+
+bearishEntry = i_entryType == "Pullback" ? pullbackToBearishEMA : 
+               i_entryType == "Breakout" ? bearishBreakout : 
+               (pullbackToBearishEMA or bearishBreakout)
+
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │                        CONFIRMATION FILTERS                                  │
+// └─────────────────────────────────────────────────────────────────────────────┘
+
+// RSI Confirmation (not overbought for longs, not oversold for shorts)
+rsiBullishOk = rsi > i_rsiOversold and rsi < i_rsiOverbought
+rsiBearishOk = rsi > i_rsiOversold and rsi < i_rsiOverbought
+
+// MACD Confirmation
+macdBullishOk = not i_useMACD or macdBullish
+macdBearishOk = not i_useMACD or macdBearish
+
+// Momentum Confirmation
+momentumBullishOk = not i_useMomentumFilter or momentumUp
+momentumBearishOk = not i_useMomentumFilter or momentumDown
+
+// Volatility Filter
+volatilityOk = atr > avgATR * i_minVolatility and atr < avgATR * i_maxVolatility
+
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │                        FINAL SIGNAL GENERATION                               │
+// └─────────────────────────────────────────────────────────────────────────────┘
+
+// Date Range Filter
+inDateRange = time >= i_startDate and time <= i_endDate
+
+// Trade Counter
+var int tradesToday = 0
+var int lastTradeDay = 0
+currentDay = dayofmonth(time)
+if currentDay != lastTradeDay
+    tradesToday := 0
+    lastTradeDay := currentDay
+canTrade = tradesToday < i_maxTradesPerDay
+
+// All Conditions Combined
+longConditions = inDateRange and canTrade and sessionAllowed and not avoidEarlyBars and
+                 isBullishTrend and emaStackOk and htfAlignmentOk and
+                 bullishEntry and isBullishCandle and
+                 rsiBullishOk and macdBullishOk and momentumBullishOk and
+                 volatilityOk and volumeOk and i_tradeLong
+
+shortConditions = inDateRange and canTrade and sessionAllowed and not avoidEarlyBars and
+                  isBearishTrend and emaStackOk and htfAlignmentOk and
+                  bearishEntry and isBearishCandle and
+                  rsiBearishOk and macdBearishOk and momentumBearishOk and
+                  volatilityOk and volumeOk and i_tradeShort
+
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │                        SL/TP CALCULATION                                     │
+// └─────────────────────────────────────────────────────────────────────────────┘
+
+longSL = close - (atr * i_slATRMult)
+longTP = close + (atr * i_tpATRMult)
+shortSL = close + (atr * i_slATRMult)
+shortTP = close - (atr * i_tpATRMult)
+
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │                        STRATEGY EXECUTION                                    │
+// └─────────────────────────────────────────────────────────────────────────────┘
+
+qty = i_useFixedQty ? i_fixedQty : na
+
+// Entry
+if longConditions and strategy.position_size <= 0
+    strategy.entry("Long", strategy.long, qty=qty)
+    tradesToday += 1
+
+if shortConditions and strategy.position_size >= 0
+    strategy.entry("Short", strategy.short, qty=qty)
+    tradesToday += 1
+
+// Exit with SL/TP
+if strategy.position_size > 0
+    strategy.exit("Long Exit", "Long", stop=longSL, limit=longTP)
+
+if strategy.position_size < 0
+    strategy.exit("Short Exit", "Short", stop=shortSL, limit=shortTP)
+
+// Trailing Stop Logic
+if i_useTrailingSL and strategy.position_size != 0
+    trailOffset = atr * i_trailATRMult
+    if strategy.position_size > 0
+        strategy.exit("Long Trail", "Long", trail_offset=trailOffset, trail_points=trailOffset)
+    else
+        strategy.exit("Short Trail", "Short", trail_offset=trailOffset, trail_points=trailOffset)
+
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │                        VISUAL OUTPUT                                         │
+// └─────────────────────────────────────────────────────────────────────────────┘
+
+// Session Zones
+sessionBgColor = isOverlapSession ? COLOR_OVERLAP : isLondonSession ? COLOR_LONDON : isNYSession ? COLOR_NY : isAsianSession ? COLOR_ASIAN : na
+bgcolor(i_showSessionZones and sessionAllowed ? sessionBgColor : na, title="Session Zone")
+
+// EMAs
+plot(i_showEMAs ? emaFast : na, "EMA Fast (21)", COLOR_EMA_FAST, 2)
+plot(i_showEMAs ? emaMid : na, "EMA Mid (55)", COLOR_EMA_MID, 2)
+plot(i_showEMAs ? emaSlow : na, "EMA Slow (200)", COLOR_EMA_SLOW, 2)
+
+// Key Levels
+[pdh, pdl] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead=barmerge.lookahead_on)
+plot(i_showLevels ? pdh : na, "PDH", color.new(#4CAF50, 30), 1, plot.style_linebr)
+plot(i_showLevels ? pdl : na, "PDL", color.new(#F44336, 30), 1, plot.style_linebr)
+
+// Signal Markers
+plotshape(i_showSignals and longConditions and strategy.position_size <= 0, "Buy Signal", 
+          shape.triangleup, location.belowbar, COLOR_BUY, size=size.small)
+plotshape(i_showSignals and shortConditions and strategy.position_size >= 0, "Sell Signal", 
+          shape.triangledown, location.abovebar, COLOR_SELL, size=size.small)
+
+// Position Background
+bgcolor(strategy.position_size > 0 ? color.new(COLOR_BUY, 92) : strategy.position_size < 0 ? color.new(COLOR_SELL, 92) : na)
+
+// Bar Coloring
+barcolor(longConditions ? COLOR_BUY : shortConditions ? COLOR_SELL : na)
+
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │                        STATUS TABLE                                          │
+// └─────────────────────────────────────────────────────────────────────────────┘
+
+if i_showTable
+    var table statusTable = table.new(position.top_right, 2, 16, bgcolor=color.new(#1E1E1E, 5), border_width=1)
+    
+    if barstate.islast
+        ts = size.small
+        
+        // Header
+        table.cell(statusTable, 0, 0, "⚡", text_color=#FFD700, text_size=ts, bgcolor=color.new(#2E2E2E, 0))
+        table.cell(statusTable, 1, 0, "SEC STRATEGY v3", text_color=#FFD700, text_size=ts, bgcolor=color.new(#2E2E2E, 0))
+        
+        // Trend
+        trendText = bullishEMAStack ? "BULLISH ▲" : bearishEMAStack ? "BEARISH ▼" : "NEUTRAL"
+        trendColor = bullishEMAStack ? COLOR_BUY : bearishEMAStack ? COLOR_SELL : COLOR_NEUTRAL
+        table.cell(statusTable, 0, 1, "Trend", text_color=color.gray, text_size=ts)
+        table.cell(statusTable, 1, 1, trendText, text_color=trendColor, text_size=ts)
+        
+        // Session
+        sessionText = isOverlapSession ? "OVERLAP ★" : isLondonSession ? "LONDON" : isNYSession ? "NEW YORK" : "ASIAN"
+        sessionColorText = isOverlapSession ? color.lime : sessionAllowed ? color.green : color.orange
+        table.cell(statusTable, 0, 2, "Session", text_color=color.gray, text_size=ts)
+        table.cell(statusTable, 1, 2, sessionText, text_color=sessionColorText, text_size=ts)
+        
+        // RSI
+        table.cell(statusTable, 0, 3, "RSI", text_color=color.gray, text_size=ts)
+        rsiColor = rsi < i_rsiOversold ? COLOR_BUY : rsi > i_rsiOverbought ? COLOR_SELL : color.white
+        table.cell(statusTable, 1, 3, str.tostring(rsi, "#.#"), text_color=rsiColor, text_size=ts)
+        
+        // MACD
+        macdText = macdBullish ? "BULLISH" : macdBearish ? "BEARISH" : "NEUTRAL"
+        table.cell(statusTable, 0, 4, "MACD", text_color=color.gray, text_size=ts)
+        table.cell(statusTable, 1, 4, macdText, text_color=macdBullish ? COLOR_BUY : macdBearish ? COLOR_SELL : color.gray, text_size=ts)
+        
+        // Volatility
+        volStatus = volatilityOk ? "OK" : "BLOCKED"
+        table.cell(statusTable, 0, 5, "Volatility", text_color=color.gray, text_size=ts)
+        table.cell(statusTable, 1, 5, volStatus, text_color=volatilityOk ? color.green : color.orange, text_size=ts)
+        
+        // Signal
+        signalText = longConditions ? "LONG ▲" : shortConditions ? "SHORT ▼" : "WAIT"
+        table.cell(statusTable, 0, 6, "Signal", text_color=color.gray, text_size=ts)
+        table.cell(statusTable, 1, 6, signalText, text_color=longConditions ? COLOR_BUY : shortConditions ? COLOR_SELL : color.gray, text_size=ts)
+        
+        // Stats Header
+        table.cell(statusTable, 0, 7, "━━ STATS ━━", text_color=#FFD700, text_size=size.tiny, bgcolor=color.new(#2E2E2E, 0))
+        table.merge_cells(statusTable, 0, 7, 1, 7)
+        
+        // Position
+        posText = strategy.position_size > 0 ? "LONG ▲" : strategy.position_size < 0 ? "SHORT ▼" : "FLAT"
+        posColor = strategy.position_size > 0 ? COLOR_BUY : strategy.position_size < 0 ? COLOR_SELL : color.gray
+        table.cell(statusTable, 0, 8, "Position", text_color=color.gray, text_size=ts)
+        table.cell(statusTable, 1, 8, posText, text_color=posColor, text_size=ts)
+        
+        // Trades Today
+        table.cell(statusTable, 0, 9, "Today", text_color=color.gray, text_size=ts)
+        table.cell(statusTable, 1, 9, str.tostring(tradesToday) + "/" + str.tostring(i_maxTradesPerDay), text_color=color.white, text_size=ts)
+        
+        // Total Trades
+        table.cell(statusTable, 0, 10, "Total Trades", text_color=color.gray, text_size=ts)
+        table.cell(statusTable, 1, 10, str.tostring(strategy.closedtrades), text_color=color.white, text_size=ts)
+        
+        // Win Rate
+        winRate = strategy.closedtrades > 0 ? strategy.wintrades / strategy.closedtrades * 100 : 0
+        table.cell(statusTable, 0, 11, "Win Rate", text_color=color.gray, text_size=ts)
+        table.cell(statusTable, 1, 11, str.tostring(winRate, "#.#") + "%", text_color=winRate >= 50 ? color.green : color.red, text_size=ts)
+        
+        // Profit Factor
+        pf = strategy.grossloss != 0 ? math.abs(strategy.grossprofit / strategy.grossloss) : 0
+        table.cell(statusTable, 0, 12, "Profit Factor", text_color=color.gray, text_size=ts)
+        table.cell(statusTable, 1, 12, str.tostring(pf, "#.##"), text_color=pf >= 1.5 ? color.green : pf >= 1 ? color.yellow : color.red, text_size=ts)
+        
+        // Net P&L
+        table.cell(statusTable, 0, 13, "Net P&L", text_color=color.gray, text_size=ts)
+        table.cell(statusTable, 1, 13, str.tostring(strategy.netprofit, "#.##"), text_color=strategy.netprofit >= 0 ? color.green : color.red, text_size=ts)
+        
+        // Max DD
+        table.cell(statusTable, 0, 14, "Max DD", text_color=color.gray, text_size=ts)
+        table.cell(statusTable, 1, 14, str.tostring(strategy.max_drawdown, "#.##"), text_color=color.orange, text_size=ts)
+        
+        // ATR
+        table.cell(statusTable, 0, 15, "ATR", text_color=color.gray, text_size=ts)
+        table.cell(statusTable, 1, 15, str.tostring(atr, "#.###"), text_color=color.white, text_size=ts)
+
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │                              ALERTS                                          │
+// └─────────────────────────────────────────────────────────────────────────────┘
+
+alertcondition(longConditions, title="SEC v3 - LONG", message="🟢 LONG SIGNAL on {{ticker}}\nPrice: {{close}}\nSL: " + str.tostring(longSL) + "\nTP: " + str.tostring(longTP))
+alertcondition(shortConditions, title="SEC v3 - SHORT", message="🔴 SHORT SIGNAL on {{ticker}}\nPrice: {{close}}\nSL: " + str.tostring(shortSL) + "\nTP: " + str.tostring(shortTP))
