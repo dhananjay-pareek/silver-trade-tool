@@ -995,9 +995,9 @@ if i_showTable
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Entry Alerts
-alertcondition(buySignal, title="Buy Signal", message="🟢 BUY SIGNAL - {{ticker}} @ {{close}} | Grade: " + tradeGrade + " | Quality: " + str.tostring(qualityScore))
-alertcondition(sellSignal, title="Sell Signal", message="🔴 SELL SIGNAL - {{ticker}} @ {{close}} | Grade: " + tradeGrade + " | Quality: " + str.tostring(qualityScore))
+alertcondition(buySignal, title="Buy Signal", message="🟢 BUY SIGNAL - {{ticker}} @ {{close}}")
+alertcondition(sellSignal, title="Sell Signal", message="🔴 SELL SIGNAL - {{ticker}} @ {{close}}")
 
 // Warning Alerts
-alertcondition(trapDetected and not trapDetected[1], title="Trap Detected", message="⚠️ TRAP DETECTED - {{ticker}} | Type: " + trapType)
-alertcondition(vixBlocked and not vixBlocked[1], title="VIX Block", message="🛑 VIX BLOCK - Trading suspended, VIX > " + str.tostring(i_vixThreshold))
+alertcondition(trapDetected and not trapDetected[1], title="Trap Detected", message="⚠️ TRAP DETECTED - {{ticker}} - Check chart for trap type")
+alertcondition(vixBlocked and not vixBlocked[1], title="VIX Block", message="🛑 VIX BLOCK - {{ticker}} - Trading suspended due to high VIX")
