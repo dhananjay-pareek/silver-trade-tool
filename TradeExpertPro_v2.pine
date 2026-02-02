@@ -886,26 +886,16 @@ plotshape(buySignal, "Buy Signal", shape.triangleup, location.belowbar, color.gr
 plotshape(sellSignal, "Sell Signal", shape.triangledown, location.abovebar, color.red, size=size.normal)
 
 // Background color for signals
-bgcolor(finalSignal == SIGNAL_BUY ? color.new(color.green, 95) : 
-        finalSignal == SIGNAL_SELL ? color.new(color.red, 95) : na)
+bgcolor(finalSignal == SIGNAL_BUY ? color.new(color.green, 95) : finalSignal == SIGNAL_SELL ? color.new(color.red, 95) : na)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //                              STATUS TABLE
 // ═══════════════════════════════════════════════════════════════════════════════
 
 if i_showTable
-    var table statusTable = table.new(
-        i_tablePos == "top_right" ? position.top_right : 
-        i_tablePos == "top_left" ? position.top_left : 
-        i_tablePos == "bottom_right" ? position.bottom_right : position.bottom_left,
-        4, 14,
-        bgcolor=color.new(color.black, 30),
-        border_width=1,
-        border_color=color.gray)
+    var table statusTable = table.new(i_tablePos == "top_right" ? position.top_right : i_tablePos == "top_left" ? position.top_left : i_tablePos == "bottom_right" ? position.bottom_right : position.bottom_left, 4, 14, bgcolor=color.new(color.black, 30), border_width=1, border_color=color.gray)
     
-    tableSize = i_tableSize == "tiny" ? size.tiny : 
-                i_tableSize == "small" ? size.small : 
-                i_tableSize == "large" ? size.large : size.normal
+    tableSize = i_tableSize == "tiny" ? size.tiny : i_tableSize == "small" ? size.small : i_tableSize == "large" ? size.large : size.normal
     
     // Header
     signalColor = finalSignal == SIGNAL_BUY ? color.green : finalSignal == SIGNAL_SELL ? color.red : color.gray
