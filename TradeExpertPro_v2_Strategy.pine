@@ -1,0 +1,862 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Trade Expert Pro v2.0 Strategy
+
+//@version=5
+strategy("Trade Expert Pro v2.0 Strategy", shorttitle="TEP Strategy", overlay=true, initial_capital=100000, default_qty_type=strategy.percent_of_equity, default_qty_value=50, commission_type=strategy.commission.percent, commission_value=0.05, slippage=2, pyramiding=0, calc_on_every_tick=false, process_orders_on_close=true)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              BLOCK 0: AUTO-DETECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Instrument Type Constants
+var string INST_NIFTY = "NIFTY"
+var string INST_SILVER = "SILVER"
+var string INST_GOLD = "GOLD"
+var string INST_CRYPTO = "CRYPTO"
+var string INST_FOREX = "FOREX"
+var string INST_GENERIC = "GENERIC"
+
+// Auto-detect instrument type
+f_detectInstrument() =>
+    sym = str.upper(syminfo.ticker)
+    result = INST_GENERIC
+    if str.contains(sym, "NIFTY") or str.contains(sym, "BANKNIFTY") or str.contains(sym, "FINNIFTY")
+        result := INST_NIFTY
+    else if str.contains(sym, "XAG") or str.contains(sym, "SILVER")
+        result := INST_SILVER
+    else if str.contains(sym, "XAU") or str.contains(sym, "GOLD")
+        result := INST_GOLD
+    else if str.contains(sym, "BTC") or str.contains(sym, "ETH") or str.contains(sym, "USDT")
+        result := INST_CRYPTO
+    else if str.contains(sym, "EUR") or str.contains(sym, "GBP") or str.contains(sym, "JPY") or str.contains(sym, "USD")
+        result := INST_FOREX
+    result
+
+instrumentType = f_detectInstrument()
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              INPUT PARAMETERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Strategy Settings
+group_strat = "═══ STRATEGY SETTINGS ═══"
+i_useTP1 = input.bool(true, "Use TP1 (Partial Exit)", group=group_strat)
+i_tp1Percent = input.float(50.0, "TP1 Exit %", minval=10, maxval=90, group=group_strat)
+i_useTrailingSL = input.bool(true, "Use Trailing Stop", group=group_strat)
+i_trailOffset = input.float(0.5, "Trail Offset (ATR Multiple)", minval=0.1, step=0.1, group=group_strat)
+i_maxTrades = input.int(3, "Max Trades Per Day", minval=1, maxval=10, group=group_strat)
+i_exitOnSessionEnd = input.bool(true, "Close Positions at Session End", group=group_strat)
+
+// UI Settings
+group_ui = "═══ UI SETTINGS ═══"
+i_tableSize = input.string("normal", "Table Size", options=["tiny", "small", "normal", "large"], group=group_ui)
+i_tablePos = input.string("top_right", "Table Position", options=["top_right", "top_left", "bottom_right", "bottom_left"], group=group_ui)
+i_showTable = input.bool(true, "Show Status Table", group=group_ui)
+i_showLevels = input.bool(true, "Show Key Levels", group=group_ui)
+i_showZones = input.bool(true, "Show Entry Zones", group=group_ui)
+i_showEMAs = input.bool(true, "Show EMAs", group=group_ui)
+
+// Volatility Settings
+group_vol = "═══ VOLATILITY ═══"
+i_atrPeriod = input.int(14, "ATR Period", minval=1, group=group_vol)
+i_atrAvgPeriod = input.int(50, "ATR Average Period", minval=10, group=group_vol)
+i_lowVolMult = input.float(0.4, "Low Volatility Threshold", minval=0.1, step=0.1, group=group_vol)
+i_highVolMult = input.float(2.5, "High Volatility Threshold", minval=1.0, step=0.1, group=group_vol)
+i_vixSymbol = input.string("NSE:INDIAVIX", "VIX Symbol (India: NSE:INDIAVIX)", group=group_vol)
+i_vixThreshold = input.float(25.0, "VIX Block Threshold", minval=10.0, group=group_vol)
+
+// Trend Settings
+group_trend = "═══ TREND SETTINGS ═══"
+i_ema9 = input.int(9, "Fast EMA", minval=1, group=group_trend)
+i_ema21 = input.int(21, "Medium EMA", minval=1, group=group_trend)
+i_ema50 = input.int(50, "Slow EMA", minval=1, group=group_trend)
+i_ema200 = input.int(200, "Trend EMA", minval=1, group=group_trend)
+i_stLength = input.int(10, "SuperTrend Length", minval=1, group=group_trend)
+i_stMult = input.float(3.0, "SuperTrend Multiplier", minval=0.1, group=group_trend)
+
+// Confirmation Settings
+group_conf = "═══ CONFIRMATION ═══"
+i_rsiPeriod = input.int(14, "RSI Period", minval=1, group=group_conf)
+i_rsiBullish = input.int(40, "RSI Bullish Below", minval=10, maxval=50, group=group_conf)
+i_rsiBearish = input.int(60, "RSI Bearish Above", minval=50, maxval=90, group=group_conf)
+i_macdFast = input.int(12, "MACD Fast", minval=1, group=group_conf)
+i_macdSlow = input.int(26, "MACD Slow", minval=1, group=group_conf)
+i_macdSignal = input.int(9, "MACD Signal", minval=1, group=group_conf)
+i_volSMA = input.int(20, "Volume SMA Period", minval=1, group=group_conf)
+i_volMult = input.float(1.3, "Volume Spike Multiplier", minval=1.0, step=0.1, group=group_conf)
+
+// Risk Management Settings
+group_risk = "═══ RISK MANAGEMENT ═══"
+i_minRR = input.float(1.5, "Minimum Risk:Reward", minval=1.0, step=0.1, group=group_risk)
+i_slBuffer = input.float(0.2, "SL Buffer (ATR Multiple)", minval=0.05, step=0.05, group=group_risk)
+i_tp1RR = input.float(1.0, "TP1 R:R", minval=0.5, step=0.1, group=group_risk)
+i_tp2RR = input.float(2.0, "TP2 R:R", minval=1.0, step=0.1, group=group_risk)
+i_tp3RR = input.float(3.0, "TP3 R:R", minval=1.5, step=0.1, group=group_risk)
+
+// Quality Score Settings
+group_quality = "═══ QUALITY SCORING ═══"
+i_minQuality = input.int(50, "Minimum Quality Score", minval=30, maxval=100, group=group_quality)
+i_aGradeMin = input.int(65, "A Grade Minimum", minval=50, maxval=90, group=group_quality)
+i_aPlusMin = input.int(80, "A+ Grade Minimum", minval=60, maxval=100, group=group_quality)
+
+// Session Settings (for Nifty/India)
+group_session = "═══ SESSION (IST) ═══"
+i_sessionStart = input.session("0930-1515", "Trading Session", group=group_session)
+i_avoidOpening = input.int(15, "Avoid First N Minutes", minval=0, group=group_session)
+i_avoidClosing = input.int(15, "Avoid Last N Minutes", minval=0, group=group_session)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              BLOCK 1: MARKET VALIDATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Bias Constants
+var int BIAS_BULLISH = 1
+var int BIAS_BEARISH = -1
+var int BIAS_NEUTRAL = 0
+
+// Signal Constants
+var int SIGNAL_BUY = 1
+var int SIGNAL_SELL = -1
+var int SIGNAL_NONE = 0
+
+// Volatility State Constants
+var string VOL_ULTRA_LOW = "ULTRA_LOW"
+var string VOL_LOW = "LOW"
+var string VOL_NORMAL = "NORMAL"
+var string VOL_HIGH = "HIGH"
+var string VOL_EXTREME = "EXTREME"
+
+// Session Constants
+var string SESSION_PREMARKET = "Pre-Market"
+var string SESSION_OPENING = "Opening"
+var string SESSION_MORNING = "Morning"
+var string SESSION_MIDDAY = "Mid-Day"
+var string SESSION_AFTERNOON = "Afternoon"
+var string SESSION_CLOSING = "Closing"
+var string SESSION_AFTER = "After Hours"
+
+// Check if within trading session
+f_isInSession() =>
+    inSession = not na(time(timeframe.period, i_sessionStart, "Asia/Kolkata"))
+    inSession
+
+// Check if avoiding opening/closing periods
+f_isValidTradingTime() =>
+    currentHour = hour(time, "Asia/Kolkata")
+    currentMin = minute(time, "Asia/Kolkata")
+    totalMin = currentHour * 60 + currentMin
+    sessionStartMin = 9 * 60 + 30
+    sessionEndMin = 15 * 60 + 15
+    afterOpening = totalMin >= (sessionStartMin + i_avoidOpening)
+    beforeClosing = totalMin <= (sessionEndMin - i_avoidClosing)
+    afterOpening and beforeClosing
+
+isInSession = f_isInSession()
+isValidTime = f_isValidTradingTime()
+isMarketValid = isInSession and isValidTime
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              BLOCK 2: VOLATILITY ANALYSIS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ATR Calculations
+atr = ta.atr(i_atrPeriod)
+atrAvg = ta.sma(atr, i_atrAvgPeriod)
+atrRatio = atr / atrAvg
+
+// VIX Data (optional)
+vixValue = request.security(i_vixSymbol, "D", close, ignore_invalid_symbol=true)
+hasVix = not na(vixValue)
+vixBlocked = hasVix and vixValue > i_vixThreshold
+
+// Determine Volatility State
+f_getVolState(ratio, vix, hasVixData) =>
+    state = VOL_NORMAL
+    if hasVixData and vix > 25
+        state := VOL_EXTREME
+    else if ratio < i_lowVolMult
+        state := VOL_ULTRA_LOW
+    else if ratio < 0.7
+        state := VOL_LOW
+    else if ratio > i_highVolMult
+        state := VOL_EXTREME
+    else if ratio > 1.5
+        state := VOL_HIGH
+    state
+
+volState = f_getVolState(atrRatio, vixValue, hasVix)
+isVolAllowed = volState != VOL_ULTRA_LOW and volState != VOL_EXTREME
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              BLOCK 3: SESSION ANALYSIS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+f_getCurrentSession() =>
+    currentHour = hour(time, "Asia/Kolkata")
+    currentMin = minute(time, "Asia/Kolkata")
+    totalMin = currentHour * 60 + currentMin
+    session = SESSION_AFTER
+    if totalMin >= 540 and totalMin < 555
+        session := SESSION_PREMARKET
+    else if totalMin >= 555 and totalMin < 570
+        session := SESSION_OPENING
+    else if totalMin >= 570 and totalMin < 660
+        session := SESSION_MORNING
+    else if totalMin >= 660 and totalMin < 780
+        session := SESSION_MIDDAY
+    else if totalMin >= 780 and totalMin < 870
+        session := SESSION_AFTERNOON
+    else if totalMin >= 870 and totalMin < 930
+        session := SESSION_CLOSING
+    session
+
+f_getSessionQuality(sess) =>
+    quality = 0
+    if sess == SESSION_MORNING
+        quality := 90
+    else if sess == SESSION_AFTERNOON
+        quality := 80
+    else if sess == SESSION_CLOSING
+        quality := 70
+    else if sess == SESSION_MIDDAY
+        quality := 50
+    else if sess == SESSION_OPENING
+        quality := 30
+    quality
+
+currentSession = f_getCurrentSession()
+sessionQuality = f_getSessionQuality(currentSession)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              BLOCK 4: MTF TREND ANALYSIS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Current Timeframe EMAs
+ema9 = ta.ema(close, i_ema9)
+ema21 = ta.ema(close, i_ema21)
+ema50 = ta.ema(close, i_ema50)
+ema200 = ta.ema(close, i_ema200)
+
+// EMA Stack Analysis
+bullishStack = ema9 > ema21 and ema21 > ema50 and close > ema200
+bearishStack = ema9 < ema21 and ema21 < ema50 and close < ema200
+
+// SuperTrend Calculation
+[supertrend, stDirection] = ta.supertrend(i_stMult, i_stLength)
+stBullish = stDirection == -1
+stBearish = stDirection == 1
+
+// Market Structure (Swing High/Low)
+swingLength = 5
+swingHigh = ta.pivothigh(high, swingLength, swingLength)
+swingLow = ta.pivotlow(low, swingLength, swingLength)
+
+var float lastSwingHigh = na
+var float lastSwingLow = na
+var float prevSwingHigh = na
+var float prevSwingLow = na
+
+if not na(swingHigh)
+    prevSwingHigh := lastSwingHigh
+    lastSwingHigh := swingHigh
+if not na(swingLow)
+    prevSwingLow := lastSwingLow
+    lastSwingLow := swingLow
+
+// Structure Analysis
+higherHighs = not na(lastSwingHigh) and not na(prevSwingHigh) and lastSwingHigh > prevSwingHigh
+higherLows = not na(lastSwingLow) and not na(prevSwingLow) and lastSwingLow > prevSwingLow
+lowerHighs = not na(lastSwingHigh) and not na(prevSwingHigh) and lastSwingHigh < prevSwingHigh
+lowerLows = not na(lastSwingLow) and not na(prevSwingLow) and lastSwingLow < prevSwingLow
+
+bullishStructure = higherHighs and higherLows
+bearishStructure = lowerHighs and lowerLows
+
+// Higher Timeframe Analysis
+htf1 = "60"
+htf2 = "D"
+
+[htfEma9_1H, htfEma21_1H, htfEma50_1H] = request.security(syminfo.tickerid, htf1, [ta.ema(close, i_ema9), ta.ema(close, i_ema21), ta.ema(close, i_ema50)], ignore_invalid_symbol=true)
+[htfEma9_D, htfEma21_D, htfEma50_D] = request.security(syminfo.tickerid, htf2, [ta.ema(close, i_ema9), ta.ema(close, i_ema21), ta.ema(close, i_ema50)], ignore_invalid_symbol=true)
+
+htf1Bullish = htfEma9_1H > htfEma21_1H and htfEma21_1H > htfEma50_1H
+htf1Bearish = htfEma9_1H < htfEma21_1H and htfEma21_1H < htfEma50_1H
+htf2Bullish = htfEma9_D > htfEma21_D and htfEma21_D > htfEma50_D
+htf2Bearish = htfEma9_D < htfEma21_D and htfEma21_D < htfEma50_D
+
+// MTF Confluence Score
+f_getMTFScore() =>
+    score = 0
+    if htf2Bullish
+        score += 30
+    else if htf2Bearish
+        score -= 30
+    if htf1Bullish
+        score += 30
+    else if htf1Bearish
+        score -= 30
+    if bullishStack
+        score += 25
+    else if bearishStack
+        score -= 25
+    if stBullish
+        score += 15
+    else if stBearish
+        score -= 15
+    score
+
+mtfScore = f_getMTFScore()
+mtfBias = mtfScore >= 50 ? BIAS_BULLISH : mtfScore <= -50 ? BIAS_BEARISH : BIAS_NEUTRAL
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              BLOCK 5: SMART MONEY DETECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// VWAP Calculation
+vwapValue = ta.vwap(hlc3)
+priceAboveVWAP = close > vwapValue
+priceBelowVWAP = close < vwapValue
+vwapDistance = math.abs(close - vwapValue) / atr
+
+// Order Block Detection (Simplified)
+f_isOrderBlock(bullish) =>
+    if bullish
+        close[2] < open[2] and close[1] > open[1] and close > high[2] and (close - open) > atr * 0.5
+    else
+        close[2] > open[2] and close[1] < open[1] and close < low[2] and (open - close) > atr * 0.5
+
+bullishOB = f_isOrderBlock(true)
+bearishOB = f_isOrderBlock(false)
+
+// Volume Analysis
+volumeSMA = ta.sma(volume, i_volSMA)
+volumeSpike = volume > volumeSMA * i_volMult
+relativeVolume = volume / volumeSMA
+
+// Absorption Detection
+candleRange = high - low
+avgRange = ta.sma(candleRange, 20)
+absorption = volumeSpike and candleRange < avgRange * 0.5
+
+// Buy/Sell Volume Estimation
+buyVolume = volume * (close - low) / (high - low)
+sellVolume = volume * (high - close) / (high - low)
+volumeImbalance = (buyVolume - sellVolume) / volume
+
+// Smart Money Score
+f_getSmartMoneyScore() =>
+    score = 50
+    if priceAboveVWAP and mtfBias == BIAS_BULLISH
+        score += 25
+    else if priceBelowVWAP and mtfBias == BIAS_BEARISH
+        score += 25
+    else if (priceAboveVWAP and mtfBias == BIAS_BEARISH) or (priceBelowVWAP and mtfBias == BIAS_BULLISH)
+        score -= 15
+    if bullishOB and mtfBias == BIAS_BULLISH
+        score += 25
+    else if bearishOB and mtfBias == BIAS_BEARISH
+        score += 25
+    if volumeSpike
+        score += 15
+    if volumeImbalance > 0.3 and mtfBias == BIAS_BULLISH
+        score += 5
+    else if volumeImbalance < -0.3 and mtfBias == BIAS_BEARISH
+        score += 5
+    if absorption
+        if close > open and mtfBias == BIAS_BULLISH
+            score += 15
+        else if close < open and mtfBias == BIAS_BEARISH
+            score += 15
+    math.max(0, math.min(100, score))
+
+smartMoneyScore = f_getSmartMoneyScore()
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              BLOCK 6: KEY LEVEL ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Previous Day High/Low
+[pdh, pdl, pdc] = request.security(syminfo.tickerid, "D", [high[1], low[1], close[1]], ignore_invalid_symbol=true)
+
+// Previous Week High/Low
+[pwh, pwl] = request.security(syminfo.tickerid, "W", [high[1], low[1]], ignore_invalid_symbol=true)
+
+// Pivot Points (Standard)
+pivotPP = (pdh + pdl + pdc) / 3
+pivotR1 = 2 * pivotPP - pdl
+pivotR2 = pivotPP + (pdh - pdl)
+pivotS1 = 2 * pivotPP - pdh
+pivotS2 = pivotPP - (pdh - pdl)
+
+// VWAP Bands
+vwapStd = ta.stdev(close, 20)
+vwapUpper1 = vwapValue + vwapStd
+vwapLower1 = vwapValue - vwapStd
+
+// Check if price is near key level
+f_isNearLevel(price, level, tolerance) =>
+    math.abs(price - level) <= tolerance
+
+levelTolerance = atr * 0.5
+
+nearPDH = f_isNearLevel(close, pdh, levelTolerance)
+nearPDL = f_isNearLevel(close, pdl, levelTolerance)
+nearPWH = f_isNearLevel(close, pwh, levelTolerance)
+nearPWL = f_isNearLevel(close, pwl, levelTolerance)
+nearPivot = f_isNearLevel(close, pivotPP, levelTolerance)
+nearVWAP = f_isNearLevel(close, vwapValue, levelTolerance)
+
+atKeySupport = nearPDL or nearPWL or nearPivot or f_isNearLevel(close, pivotS1, levelTolerance) or f_isNearLevel(close, vwapLower1, levelTolerance)
+atKeyResistance = nearPDH or nearPWH or f_isNearLevel(close, pivotR1, levelTolerance) or f_isNearLevel(close, vwapUpper1, levelTolerance)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              BLOCK 7: ENTRY ZONE IDENTIFICATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Pullback to EMA Zone
+emaPullbackZone = 0.003
+nearEMA21 = math.abs(close - ema21) / close < emaPullbackZone
+
+// Entry Zone Detection
+f_getEntryZone() =>
+    zone = ""
+    quality = 0
+    if mtfBias == BIAS_BULLISH
+        if nearPDL or nearPWL
+            zone := "Key Support"
+            quality := 95
+        else if bullishOB
+            zone := "Demand Block"
+            quality := 90
+        else if nearEMA21 and stBullish
+            zone := "21 EMA Pullback"
+            quality := 75
+        else if nearVWAP and priceAboveVWAP
+            zone := "VWAP Zone"
+            quality := 70
+        else if atKeySupport
+            zone := "Support Zone"
+            quality := 65
+    else if mtfBias == BIAS_BEARISH
+        if nearPDH or nearPWH
+            zone := "Key Resistance"
+            quality := 95
+        else if bearishOB
+            zone := "Supply Block"
+            quality := 90
+        else if nearEMA21 and stBearish
+            zone := "21 EMA Rally"
+            quality := 75
+        else if nearVWAP and priceBelowVWAP
+            zone := "VWAP Zone"
+            quality := 70
+        else if atKeyResistance
+            zone := "Resistance Zone"
+            quality := 65
+    [zone, quality]
+
+[entryZone, entryZoneQuality] = f_getEntryZone()
+hasValidZone = entryZoneQuality >= 60
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              BLOCK 8: ENTRY TRIGGER & CONFIRMATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// RSI
+rsi = ta.rsi(close, i_rsiPeriod)
+rsiBullishOK = rsi < i_rsiBullish or (rsi > rsi[1] and rsi[1] < 50)
+rsiBearishOK = rsi > i_rsiBearish or (rsi < rsi[1] and rsi[1] > 50)
+
+// MACD
+[macdLine, signalLine, histLine] = ta.macd(close, i_macdFast, i_macdSlow, i_macdSignal)
+macdBullishOK = macdLine > signalLine or (histLine > histLine[1] and histLine > 0)
+macdBearishOK = macdLine < signalLine or (histLine < histLine[1] and histLine < 0)
+
+// ADX
+[diPlus, diMinus, adx] = ta.dmi(14, 14)
+adxStrong = adx > 25
+adxBullish = adxStrong and diPlus > diMinus
+adxBearish = adxStrong and diMinus > diPlus
+
+// Candlestick Patterns
+bullishCandle = close > open
+bearishCandle = close < open
+bodySize = math.abs(close - open)
+wickSize = high - low - bodySize
+strongBody = bodySize > wickSize
+
+// Engulfing Pattern
+bullishEngulfing = close > open and close[1] < open[1] and close > open[1] and open < close[1]
+bearishEngulfing = close < open and close[1] > open[1] and close < open[1] and open > close[1]
+
+// Hammer/Shooting Star
+lowerWick = bullishCandle ? open - low : close - low
+upperWick = bullishCandle ? high - close : high - open
+hammer = lowerWick > bodySize * 2 and upperWick < bodySize * 0.5 and low == ta.lowest(low, 5)
+shootingStar = upperWick > bodySize * 2 and lowerWick < bodySize * 0.5 and high == ta.highest(high, 5)
+
+// Structure Break
+breakAbove = close > ta.highest(high, 5)[1]
+breakBelow = close < ta.lowest(low, 5)[1]
+
+// Confirmation Score Calculation
+f_getConfirmationScore(bias) =>
+    score = 0
+    if bias == BIAS_BULLISH
+        if bullishEngulfing or hammer
+            score += 20
+        else if bullishCandle and strongBody
+            score += 10
+        if rsiBullishOK
+            score += 15
+        if macdBullishOK
+            score += 15
+        if volumeSpike
+            score += 20
+        if breakAbove
+            score += 20
+        if adxBullish
+            score += 10
+    else if bias == BIAS_BEARISH
+        if bearishEngulfing or shootingStar
+            score += 20
+        else if bearishCandle and strongBody
+            score += 10
+        if rsiBearishOK
+            score += 15
+        if macdBearishOK
+            score += 15
+        if volumeSpike
+            score += 20
+        if breakBelow
+            score += 20
+        if adxBearish
+            score += 10
+    score
+
+confirmationScore = f_getConfirmationScore(mtfBias)
+hasConfirmation = confirmationScore >= 50
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              BLOCK 9: TRAP DETECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Stop Hunt Detection
+bullStopHunt = low < pdl and close > pdl and close > open
+bearStopHunt = high > pdh and close < pdh and close < open
+
+// Liquidity Grab
+totalRange = high - low
+wickRatio = (totalRange - bodySize) / totalRange
+liquidityGrab = wickRatio > 0.6
+
+// False Breakout Detection
+var int breakoutBarCount = 0
+var bool wasBreakout = false
+
+if breakAbove or breakBelow
+    wasBreakout := true
+    breakoutBarCount := 0
+else if wasBreakout
+    breakoutBarCount += 1
+    if breakoutBarCount >= 3
+        wasBreakout := false
+
+falseBreakout = wasBreakout and breakoutBarCount >= 2 and ((breakAbove[breakoutBarCount] and close < ta.highest(high, 5)[breakoutBarCount+1]) or (breakBelow[breakoutBarCount] and close > ta.lowest(low, 5)[breakoutBarCount+1]))
+
+// Expiry Day Check
+isThursday = dayofweek(time, "Asia/Kolkata") == dayofweek.thursday
+isExpiryDay = isThursday and instrumentType == INST_NIFTY
+
+// Trap Detection Summary
+trapDetected = bullStopHunt or bearStopHunt or liquidityGrab or falseBreakout
+trapType = bullStopHunt ? "Stop Hunt (Bull)" : bearStopHunt ? "Stop Hunt (Bear)" : liquidityGrab ? "Liquidity Grab" : falseBreakout ? "False Breakout" : "None"
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              BLOCK 10: RISK MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Stop Loss Calculation
+f_calculateSL(bias, entry) =>
+    sl = 0.0
+    if bias == BIAS_BULLISH
+        structureSL = nz(lastSwingLow, entry - atr * 1.5) - atr * i_slBuffer
+        atrSL = entry - atr * 1.2
+        sl := math.max(structureSL, atrSL)
+    else if bias == BIAS_BEARISH
+        structureSL = nz(lastSwingHigh, entry + atr * 1.5) + atr * i_slBuffer
+        atrSL = entry + atr * 1.2
+        sl := math.min(structureSL, atrSL)
+    sl
+
+// Take Profit Calculation
+f_calculateTP(bias, entry, sl) =>
+    risk = math.abs(entry - sl)
+    tp1 = 0.0
+    tp2 = 0.0
+    tp3 = 0.0
+    if bias == BIAS_BULLISH
+        tp1 := entry + risk * i_tp1RR
+        tp2 := entry + risk * i_tp2RR
+        tp3 := entry + risk * i_tp3RR
+    else if bias == BIAS_BEARISH
+        tp1 := entry - risk * i_tp1RR
+        tp2 := entry - risk * i_tp2RR
+        tp3 := entry - risk * i_tp3RR
+    [tp1, tp2, tp3]
+
+// Risk:Reward Calculation
+f_calculateRR(entry, sl, tp) =>
+    risk = math.abs(entry - sl)
+    reward = math.abs(tp - entry)
+    rr = risk > 0 ? reward / risk : 0
+    rr
+
+// Calculate levels
+entryPrice = close
+stopLoss = f_calculateSL(mtfBias, entryPrice)
+[tp1, tp2, tp3] = f_calculateTP(mtfBias, entryPrice, stopLoss)
+riskReward = f_calculateRR(entryPrice, stopLoss, tp2)
+
+rrOK = riskReward >= i_minRR
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              BLOCK 11: TRADE QUALITY SCORE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+f_calculateQualityScore() =>
+    score = 0
+    mtfContrib = math.abs(mtfScore) / 100 * 20
+    score += math.round(mtfContrib)
+    sessionContrib = sessionQuality / 100 * 10
+    score += math.round(sessionContrib)
+    smContrib = smartMoneyScore / 100 * 20
+    score += math.round(smContrib)
+    zoneContrib = entryZoneQuality / 100 * 15
+    score += math.round(zoneContrib)
+    confContrib = confirmationScore / 100 * 15
+    score += math.round(confContrib)
+    rrContrib = riskReward >= 2 ? 10 : riskReward >= 1.5 ? 7 : riskReward >= 1 ? 5 : 0
+    score += rrContrib
+    if not trapDetected
+        score += 10
+    math.min(100, score)
+
+qualityScore = f_calculateQualityScore()
+
+// Grade Assignment
+f_getGrade(score) =>
+    grade = "SKIP"
+    if score >= i_aPlusMin
+        grade := "A+"
+    else if score >= i_aGradeMin
+        grade := "A"
+    else if score >= i_minQuality
+        grade := "B"
+    grade
+
+tradeGrade = f_getGrade(qualityScore)
+isTradeAllowed = qualityScore >= i_minQuality
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              BLOCK 12: SIGNAL OUTPUT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Final Signal Determination
+f_getFinalSignal() =>
+    signal = SIGNAL_NONE
+    if vixBlocked
+        signal := SIGNAL_NONE
+    else if not isVolAllowed
+        signal := SIGNAL_NONE
+    else if mtfBias == BIAS_NEUTRAL
+        signal := SIGNAL_NONE
+    else if not hasValidZone
+        signal := SIGNAL_NONE
+    else if not hasConfirmation
+        signal := SIGNAL_NONE
+    else if not rrOK
+        signal := SIGNAL_NONE
+    else if trapDetected
+        signal := SIGNAL_NONE
+    else if not isTradeAllowed
+        signal := SIGNAL_NONE
+    else
+        if mtfBias == BIAS_BULLISH
+            signal := SIGNAL_BUY
+        else if mtfBias == BIAS_BEARISH
+            signal := SIGNAL_SELL
+    signal
+
+finalSignal = f_getFinalSignal()
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              BLOCK 13: DIVERGENCE DETECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+rsiForDiv = ta.rsi(close, 14)
+rsiSwingHigh = ta.pivothigh(rsiForDiv, 5, 5)
+rsiSwingLow = ta.pivotlow(rsiForDiv, 5, 5)
+priceSwingHigh = ta.pivothigh(high, 5, 5)
+priceSwingLow = ta.pivotlow(low, 5, 5)
+
+var float lastPriceLow = na
+var float lastRSILow = na
+var float prevPriceLow = na
+var float prevRSILow = na
+
+if not na(priceSwingLow)
+    prevPriceLow := lastPriceLow
+    prevRSILow := lastRSILow
+    lastPriceLow := priceSwingLow
+    lastRSILow := rsiForDiv[5]
+
+bullishDivergence = not na(lastPriceLow) and not na(prevPriceLow) and lastPriceLow < prevPriceLow and lastRSILow > prevRSILow
+
+var float lastPriceHigh = na
+var float lastRSIHigh = na
+var float prevPriceHigh = na
+var float prevRSIHigh = na
+
+if not na(priceSwingHigh)
+    prevPriceHigh := lastPriceHigh
+    prevRSIHigh := lastRSIHigh
+    lastPriceHigh := priceSwingHigh
+    lastRSIHigh := rsiForDiv[5]
+
+bearishDivergence = not na(lastPriceHigh) and not na(prevPriceHigh) and lastPriceHigh > prevPriceHigh and lastRSIHigh < prevRSIHigh
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              STRATEGY ENTRY/EXIT LOGIC
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Track daily trades
+var int dailyTrades = 0
+var int lastTradeDay = 0
+currentDay = dayofmonth(time)
+
+if currentDay != lastTradeDay
+    dailyTrades := 0
+    lastTradeDay := currentDay
+
+// Entry Signals
+buySignal = finalSignal == SIGNAL_BUY and finalSignal[1] != SIGNAL_BUY and dailyTrades < i_maxTrades
+sellSignal = finalSignal == SIGNAL_SELL and finalSignal[1] != SIGNAL_SELL and dailyTrades < i_maxTrades
+
+// Execute Long Entry
+if buySignal and strategy.position_size == 0
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long Exit", "Long", stop=stopLoss, limit=tp2)
+    dailyTrades += 1
+
+// Execute Short Entry
+if sellSignal and strategy.position_size == 0
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short Exit", "Short", stop=stopLoss, limit=tp2)
+    dailyTrades += 1
+
+// Trailing Stop (optional)
+if i_useTrailingSL and strategy.position_size != 0
+    trailStop = atr * i_trailOffset
+    if strategy.position_size > 0
+        strategy.exit("Long Trail", "Long", trail_points=trailStop, trail_offset=trailStop)
+    else if strategy.position_size < 0
+        strategy.exit("Short Trail", "Short", trail_points=trailStop, trail_offset=trailStop)
+
+// Close position at session end (optional)
+sessionEndHour = 15
+sessionEndMin = 10
+currentHour = hour(time, "Asia/Kolkata")
+currentMin = minute(time, "Asia/Kolkata")
+isSessionEnd = currentHour == sessionEndHour and currentMin >= sessionEndMin
+
+if i_exitOnSessionEnd and isSessionEnd and strategy.position_size != 0
+    strategy.close_all(comment="Session End")
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              VISUALIZATIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// EMA Plots
+plot(i_showEMAs ? ema9 : na, "EMA 9", color=color.new(color.blue, 50), linewidth=1)
+plot(i_showEMAs ? ema21 : na, "EMA 21", color=color.new(color.orange, 50), linewidth=1)
+plot(i_showEMAs ? ema50 : na, "EMA 50", color=color.new(color.purple, 50), linewidth=2)
+plot(i_showEMAs ? ema200 : na, "EMA 200", color=color.new(color.red, 50), linewidth=2)
+
+// VWAP Plot
+plot(i_showLevels ? vwapValue : na, "VWAP", color=color.new(color.yellow, 30), linewidth=2, style=plot.style_circles)
+
+// SuperTrend
+stColor = stBullish ? color.new(color.green, 70) : color.new(color.red, 70)
+plot(supertrend, "SuperTrend", color=stColor, linewidth=2)
+
+// Key Levels
+plot(i_showLevels ? pdh : na, "PDH", color=color.new(color.red, 50), linewidth=1, style=plot.style_linebr)
+plot(i_showLevels ? pdl : na, "PDL", color=color.new(color.green, 50), linewidth=1, style=plot.style_linebr)
+plot(i_showLevels ? pivotPP : na, "Pivot", color=color.new(color.gray, 50), linewidth=1, style=plot.style_linebr)
+
+// Signal Markers
+plotshape(buySignal, "Buy Signal", shape.triangleup, location.belowbar, color.green, size=size.normal)
+plotshape(sellSignal, "Sell Signal", shape.triangledown, location.abovebar, color.red, size=size.normal)
+
+// Background color for signals
+bgcolor(finalSignal == SIGNAL_BUY ? color.new(color.green, 95) : finalSignal == SIGNAL_SELL ? color.new(color.red, 95) : na)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              STATUS TABLE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+if i_showTable
+    var table statusTable = table.new(i_tablePos == "top_right" ? position.top_right : i_tablePos == "top_left" ? position.top_left : i_tablePos == "bottom_right" ? position.bottom_right : position.bottom_left, 4, 12, bgcolor=color.new(color.black, 30), border_width=1, border_color=color.gray)
+    
+    tableSize = i_tableSize == "tiny" ? size.tiny : i_tableSize == "small" ? size.small : i_tableSize == "large" ? size.large : size.normal
+    
+    signalColor = finalSignal == SIGNAL_BUY ? color.green : finalSignal == SIGNAL_SELL ? color.red : color.gray
+    signalText = finalSignal == SIGNAL_BUY ? "BUY" : finalSignal == SIGNAL_SELL ? "SELL" : "NO TRADE"
+    
+    table.cell(statusTable, 0, 0, "TEP STRATEGY v2.0", text_color=color.white, text_size=tableSize, bgcolor=color.new(color.blue, 50))
+    table.merge_cells(statusTable, 0, 0, 3, 0)
+    
+    table.cell(statusTable, 0, 1, signalText + " - " + tradeGrade, text_color=signalColor, text_size=tableSize, bgcolor=color.new(signalColor, 80))
+    table.merge_cells(statusTable, 0, 1, 3, 1)
+    
+    table.cell(statusTable, 0, 2, "Quality", text_color=color.gray, text_size=tableSize)
+    qualColor = qualityScore >= 80 ? color.green : qualityScore >= 65 ? color.lime : qualityScore >= 50 ? color.yellow : color.red
+    table.cell(statusTable, 1, 2, str.tostring(qualityScore) + "/100", text_color=qualColor, text_size=tableSize)
+    table.cell(statusTable, 2, 2, "R:R", text_color=color.gray, text_size=tableSize)
+    rrColor = riskReward >= 2 ? color.green : riskReward >= 1.5 ? color.yellow : color.red
+    table.cell(statusTable, 3, 2, "1:" + str.tostring(riskReward, "#.##"), text_color=rrColor, text_size=tableSize)
+    
+    biasColor = mtfBias == BIAS_BULLISH ? color.green : mtfBias == BIAS_BEARISH ? color.red : color.gray
+    biasText = mtfBias == BIAS_BULLISH ? "BULL" : mtfBias == BIAS_BEARISH ? "BEAR" : "NEUT"
+    table.cell(statusTable, 0, 3, "Bias", text_color=color.gray, text_size=tableSize)
+    table.cell(statusTable, 1, 3, biasText, text_color=biasColor, text_size=tableSize)
+    table.cell(statusTable, 2, 3, "Vol", text_color=color.gray, text_size=tableSize)
+    volColor = volState == VOL_NORMAL ? color.green : volState == VOL_HIGH ? color.orange : color.red
+    table.cell(statusTable, 3, 3, volState, text_color=volColor, text_size=tableSize)
+    
+    table.cell(statusTable, 0, 4, "Entry", text_color=color.gray, text_size=tableSize)
+    table.cell(statusTable, 1, 4, str.tostring(entryPrice, "#.##"), text_color=color.white, text_size=tableSize)
+    table.cell(statusTable, 2, 4, "SL", text_color=color.gray, text_size=tableSize)
+    table.cell(statusTable, 3, 4, str.tostring(stopLoss, "#.##"), text_color=color.red, text_size=tableSize)
+    
+    table.cell(statusTable, 0, 5, "TP1", text_color=color.gray, text_size=tableSize)
+    table.cell(statusTable, 1, 5, str.tostring(tp1, "#.##"), text_color=color.green, text_size=tableSize)
+    table.cell(statusTable, 2, 5, "TP2", text_color=color.gray, text_size=tableSize)
+    table.cell(statusTable, 3, 5, str.tostring(tp2, "#.##"), text_color=color.green, text_size=tableSize)
+    
+    trapColor = trapDetected ? color.red : color.green
+    table.cell(statusTable, 0, 6, "Trap", text_color=color.gray, text_size=tableSize)
+    table.cell(statusTable, 1, 6, trapDetected ? "YES" : "NO", text_color=trapColor, text_size=tableSize)
+    table.cell(statusTable, 2, 6, "Trades", text_color=color.gray, text_size=tableSize)
+    table.cell(statusTable, 3, 6, str.tostring(dailyTrades) + "/" + str.tostring(i_maxTrades), text_color=color.white, text_size=tableSize)
+    
+    // Position Info
+    posColor = strategy.position_size > 0 ? color.green : strategy.position_size < 0 ? color.red : color.gray
+    posText = strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT"
+    table.cell(statusTable, 0, 7, "Position", text_color=color.gray, text_size=tableSize)
+    table.cell(statusTable, 1, 7, posText, text_color=posColor, text_size=tableSize)
+    table.cell(statusTable, 2, 7, "P/L %", text_color=color.gray, text_size=tableSize)
+    plPercent = strategy.openprofit / strategy.initial_capital * 100
+    plColor = plPercent >= 0 ? color.green : color.red
+    table.cell(statusTable, 3, 7, str.tostring(plPercent, "#.##") + "%", text_color=plColor, text_size=tableSize)
