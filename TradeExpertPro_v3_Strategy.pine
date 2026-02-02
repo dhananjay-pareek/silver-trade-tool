@@ -176,9 +176,9 @@ trendScore += aboveEMA200 ? 15 : belowEMA200 ? -15 : 0
 trendScore += htfBullish ? 20 : htfBearish ? -20 : 0
 trendScore += dailyBullish ? 20 : dailyBearish ? -20 : 0
 
-// ULTRA STRICT: Require trend score >= 80 for 80%+ win rate
-strongBullTrend = trendScore >= 80
-strongBearTrend = trendScore <= -80
+// Balanced threshold for trades with quality
+strongBullTrend = trendScore >= 40
+strongBearTrend = trendScore <= -40
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //                              SESSION & TIME FILTERS
@@ -216,31 +216,32 @@ volatilityOK = atrRatio >= i_volMinMult and atrRatio <= i_volMaxMult
 bullishBias = strongBullTrend and aboveEMA200 and stBullish
 bearishBias = strongBearTrend and belowEMA200 and stBearish
 
-// Condition 2: Valid Entry Zone (FVG, Order Block, or EMA pullback)
-nearEMA21 = math.abs(close - emaMed) / close < 0.005
-bullishZone = inBullFVG or bullishOB or (nearEMA21 and close > emaMed)
-bearishZone = inBearFVG or bearishOB or (nearEMA21 and close < emaMed)
+// Condition 2: Valid Entry Zone - Relaxed
+nearEMA21 = math.abs(close - emaMed) / close < 0.01
+nearEMA50 = math.abs(close - emaSlow) / close < 0.015
+bullishZone = inBullFVG or bullishOB or nearEMA21 or nearEMA50 or (close > emaMed and close < emaMed * 1.01)
+bearishZone = inBearFVG or bearishOB or nearEMA21 or nearEMA50 or (close < emaMed and close > emaMed * 0.99)
 
-// Condition 3: Momentum Confirmation
-bullishMomentum = (stochBullCross or (stochK > stochD and stochOversold[1])) and macdBullish and trendStrong
-bearishMomentum = (stochBearCross or (stochK < stochD and stochOverbought[1])) and macdBearish and trendStrong
+// Condition 3: Momentum Confirmation - Relaxed
+bullishMomentum = (stochBullCross or stochK > stochD or stochOversold[1]) and (macdBullish or histLine > 0)
+bearishMomentum = (stochBearCross or stochK < stochD or stochOverbought[1]) and (macdBearish or histLine < 0)
 
-// Candlestick Confirmation - Ultra Strict
-bullishCandle = close > open and (close - open) > (high - low) * 0.6 and close > high[1]
-bearishCandle = close < open and (open - close) > (high - low) * 0.6 and close < low[1]
+// Candlestick Confirmation - Relaxed
+bullishCandle = close > open
+bearishCandle = close < open
 
-// Volume Confirmation - Must have spike
-goodVolume = volSpike
+// Volume Confirmation - Relaxed
+goodVolume = volume > volSMA * 0.8
 
-// RSI Confirmation for extra filter
+// RSI Confirmation - Wider range
 rsiFilter = ta.rsi(close, 14)
-rsiBullishOK = rsiFilter > 40 and rsiFilter < 70
-rsiBearishOK = rsiFilter < 60 and rsiFilter > 30
+rsiBullishOK = rsiFilter > 30 and rsiFilter < 75
+rsiBearishOK = rsiFilter < 70 and rsiFilter > 25
 
-// Price momentum - Moving in right direction
+// Price momentum
 priceMomentum = ta.mom(close, 5)
-bullMomentum = priceMomentum > 0
-bearMomentum = priceMomentum < 0
+bullMomentum = priceMomentum > 0 or close > close[1]
+bearMomentum = priceMomentum < 0 or close < close[1]
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //                              RISK MANAGEMENT
@@ -288,18 +289,12 @@ if consecutiveLosses >= 2
 //                              FINAL ENTRY SIGNALS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// NO DAILY LIMIT - Unlimited trades but ultra strict conditions
+// Simplified conditions for more trades
 canTrade = validTradingTime and volatilityOK and not pauseTrading
 
-// ULTRA STRICT 5-CONFIRMATION ENTRY for 80%+ Win Rate
-// 1. Strong Trend (80+ score)
-// 2. Valid Entry Zone (FVG/OB)
-// 3. Momentum (StochRSI cross + MACD)
-// 4. Strong Candle + Volume Spike
-// 5. RSI in range + Price momentum
-
-longCondition = canTrade and bullishBias and bullishZone and bullishMomentum and bullishCandle and goodVolume and rsiBullishOK and bullMomentum and diPlus > diMinus
-shortCondition = canTrade and bearishBias and bearishZone and bearishMomentum and bearishCandle and goodVolume and rsiBearishOK and bearMomentum and diMinus > diPlus
+// Entry conditions - balanced for trades + quality
+longCondition = canTrade and strongBullTrend and aboveEMA200 and stBullish and bullishZone and bullishMomentum and bullishCandle and rsiBullishOK
+shortCondition = canTrade and strongBearTrend and belowEMA200 and stBearish and bearishZone and bearishMomentum and bearishCandle and rsiBearishOK
 
 // Prevent signal on consecutive bars
 longSignal = longCondition and not longCondition[1] and strategy.position_size == 0
