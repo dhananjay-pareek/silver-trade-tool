@@ -1,0 +1,409 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Trade Expert Pro v3.0 - Professional Algorithmic Strategy
+// Combined: Smart Money + Trend Following + Mean Reversion Filters
+
+//@version=5
+strategy("Trade Expert Pro v3.0", shorttitle="TEP v3.0", overlay=true, initial_capital=100000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, commission_type=strategy.commission.percent, commission_value=0.05, slippage=2, pyramiding=0, calc_on_every_tick=false, process_orders_on_close=true, max_bars_back=500)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              STRATEGY INPUTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Risk Management
+group_risk = "═══ RISK MANAGEMENT ═══"
+i_riskPercent = input.float(1.5, "Risk Per Trade %", minval=0.5, maxval=5, step=0.5, group=group_risk)
+i_maxDailyLoss = input.float(3.0, "Max Daily Loss %", minval=1, maxval=10, step=0.5, group=group_risk)
+i_maxTrades = input.int(2, "Max Trades Per Day", minval=1, maxval=5, group=group_risk)
+
+// Take Profit Settings
+group_tp = "═══ TAKE PROFIT ═══"
+i_tp1RR = input.float(1.0, "TP1 R:R (40% exit)", minval=0.5, step=0.1, group=group_tp)
+i_tp2RR = input.float(2.0, "TP2 R:R (30% exit)", minval=1.0, step=0.1, group=group_tp)
+i_useTrailing = input.bool(true, "Use Trailing for remaining 30%", group=group_tp)
+i_trailATR = input.float(1.5, "Trailing Stop (ATR multiple)", minval=0.5, step=0.1, group=group_tp)
+
+// Trend Settings
+group_trend = "═══ TREND FILTERS ═══"
+i_emaFast = input.int(9, "Fast EMA", minval=5, group=group_trend)
+i_emaMed = input.int(21, "Medium EMA", minval=10, group=group_trend)
+i_emaSlow = input.int(50, "Slow EMA", minval=20, group=group_trend)
+i_ema200 = input.int(200, "Trend EMA", minval=100, group=group_trend)
+i_adxLen = input.int(14, "ADX Length", minval=7, group=group_trend)
+i_adxThreshold = input.int(20, "ADX Threshold (trend strength)", minval=15, maxval=30, group=group_trend)
+
+// SuperTrend Settings
+group_st = "═══ SUPERTREND ═══"
+i_stLength = input.int(10, "SuperTrend Length", minval=5, group=group_st)
+i_stMult = input.float(2.5, "SuperTrend Multiplier", minval=1.0, step=0.1, group=group_st)
+
+// Stochastic RSI Settings
+group_stoch = "═══ STOCHASTIC RSI ═══"
+i_stochK = input.int(14, "K Length", minval=5, group=group_stoch)
+i_stochD = input.int(3, "D Smooth", minval=1, group=group_stoch)
+i_stochSmooth = input.int(3, "RSI Length", minval=1, group=group_stoch)
+i_stochOB = input.int(80, "Overbought", minval=70, maxval=95, group=group_stoch)
+i_stochOS = input.int(20, "Oversold", minval=5, maxval=30, group=group_stoch)
+
+// Volatility Settings
+group_vol = "═══ VOLATILITY ═══"
+i_atrLen = input.int(14, "ATR Length", minval=5, group=group_vol)
+i_atrAvgLen = input.int(50, "ATR Average Length", minval=20, group=group_vol)
+i_volMinMult = input.float(0.5, "Min Volatility (skip if below)", minval=0.2, step=0.1, group=group_vol)
+i_volMaxMult = input.float(2.0, "Max Volatility (skip if above)", minval=1.5, step=0.1, group=group_vol)
+
+// Session Settings
+group_session = "═══ SESSION (IST) ═══"
+i_tradingSession = input.session("0930-1515", "Trading Session", group=group_session)
+i_avoidOpen = input.int(30, "Avoid First N Minutes", minval=0, maxval=60, group=group_session)
+i_avoidClose = input.int(30, "Avoid Last N Minutes", minval=0, maxval=60, group=group_session)
+
+// Visual Settings
+group_visual = "═══ VISUAL ═══"
+i_showEMA = input.bool(true, "Show EMAs", group=group_visual)
+i_showST = input.bool(true, "Show SuperTrend", group=group_visual)
+i_showTable = input.bool(true, "Show Dashboard", group=group_visual)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              CORE INDICATORS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// EMAs
+emaFast = ta.ema(close, i_emaFast)
+emaMed = ta.ema(close, i_emaMed)
+emaSlow = ta.ema(close, i_emaSlow)
+ema200 = ta.ema(close, i_ema200)
+
+// SuperTrend
+[supertrend, stDir] = ta.supertrend(i_stMult, i_stLength)
+stBullish = stDir == -1
+stBearish = stDir == 1
+
+// ATR
+atr = ta.atr(i_atrLen)
+atrAvg = ta.sma(atr, i_atrAvgLen)
+atrRatio = atr / atrAvg
+
+// ADX for Trend Strength
+[diPlus, diMinus, adxValue] = ta.dmi(i_adxLen, i_adxLen)
+trendStrong = adxValue > i_adxThreshold
+
+// Stochastic RSI
+rsiValue = ta.rsi(close, i_stochSmooth)
+stochK = ta.sma(ta.stoch(rsiValue, rsiValue, rsiValue, i_stochK), i_stochD)
+stochD = ta.sma(stochK, i_stochD)
+
+// Stoch RSI Signals
+stochBullCross = ta.crossover(stochK, stochD) and stochK < i_stochOS + 20
+stochBearCross = ta.crossunder(stochK, stochD) and stochK > i_stochOB - 20
+stochOversold = stochK < i_stochOS
+stochOverbought = stochK > i_stochOB
+
+// MACD
+[macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
+macdBullish = macdLine > signalLine and histLine > histLine[1]
+macdBearish = macdLine < signalLine and histLine < histLine[1]
+
+// Volume Analysis
+volSMA = ta.sma(volume, 20)
+volSpike = volume > volSMA * 1.3
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              FAIR VALUE GAP (FVG) DETECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Bullish FVG: Gap between candle[2] high and candle[0] low
+bullishFVG = low > high[2] and close[1] > open[1] and (low - high[2]) > atr * 0.3
+
+// Bearish FVG: Gap between candle[2] low and candle[0] high
+bearishFVG = high < low[2] and close[1] < open[1] and (low[2] - high) > atr * 0.3
+
+// FVG Fill Detection (price returns to gap)
+var float bullFVGTop = na
+var float bullFVGBottom = na
+var float bearFVGTop = na
+var float bearFVGBottom = na
+
+if bullishFVG
+    bullFVGTop := low
+    bullFVGBottom := high[2]
+
+if bearishFVG
+    bearFVGTop := low[2]
+    bearFVGBottom := high
+
+// Price in FVG zone
+inBullFVG = not na(bullFVGBottom) and low <= bullFVGTop and close > bullFVGBottom
+inBearFVG = not na(bearFVGTop) and high >= bearFVGBottom and close < bearFVGTop
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              ORDER BLOCK DETECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Bullish Order Block: Last bearish candle before strong bullish move
+bullishOB = close[2] < open[2] and close[1] > open[1] and close > high[1] and (close - open) > atr * 0.5
+
+// Bearish Order Block: Last bullish candle before strong bearish move
+bearishOB = close[2] > open[2] and close[1] < open[1] and close < low[1] and (open - close) > atr * 0.5
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              TREND ANALYSIS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// EMA Stack
+bullishEMAStack = emaFast > emaMed and emaMed > emaSlow
+bearishEMAStack = emaFast < emaMed and emaMed < emaSlow
+
+// Price relative to EMA200
+aboveEMA200 = close > ema200
+belowEMA200 = close < ema200
+
+// Higher Timeframe Trend (1H)
+htfClose = request.security(syminfo.tickerid, "60", close, ignore_invalid_symbol=true)
+htfEma50 = request.security(syminfo.tickerid, "60", ta.ema(close, 50), ignore_invalid_symbol=true)
+htfBullish = htfClose > htfEma50
+htfBearish = htfClose < htfEma50
+
+// Daily Trend
+dailyClose = request.security(syminfo.tickerid, "D", close, ignore_invalid_symbol=true)
+dailyEma21 = request.security(syminfo.tickerid, "D", ta.ema(close, 21), ignore_invalid_symbol=true)
+dailyBullish = dailyClose > dailyEma21
+dailyBearish = dailyClose < dailyEma21
+
+// Combined Trend Score
+trendScore = 0
+trendScore += bullishEMAStack ? 25 : bearishEMAStack ? -25 : 0
+trendScore += stBullish ? 20 : stBearish ? -20 : 0
+trendScore += aboveEMA200 ? 15 : belowEMA200 ? -15 : 0
+trendScore += htfBullish ? 20 : htfBearish ? -20 : 0
+trendScore += dailyBullish ? 20 : dailyBearish ? -20 : 0
+
+strongBullTrend = trendScore >= 60
+strongBearTrend = trendScore <= -60
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              SESSION & TIME FILTERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Session Check
+inSession = not na(time(timeframe.period, i_tradingSession, "Asia/Kolkata"))
+
+// Time filters
+currentHour = hour(time, "Asia/Kolkata")
+currentMin = minute(time, "Asia/Kolkata")
+totalMin = currentHour * 60 + currentMin
+sessionStart = 9 * 60 + 30
+sessionEnd = 15 * 60 + 15
+
+afterOpeningPeriod = totalMin >= (sessionStart + i_avoidOpen)
+beforeClosingPeriod = totalMin <= (sessionEnd - i_avoidClose)
+
+validTradingTime = inSession and afterOpeningPeriod and beforeClosingPeriod
+
+// Best trading session (Morning 9:30-11:00)
+isMorningSession = totalMin >= 570 and totalMin < 660
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              VOLATILITY FILTER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+volatilityOK = atrRatio >= i_volMinMult and atrRatio <= i_volMaxMult
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              ENTRY CONDITIONS - TRIPLE CONFIRMATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Condition 1: Strong Trend Bias
+bullishBias = strongBullTrend and aboveEMA200 and stBullish
+bearishBias = strongBearTrend and belowEMA200 and stBearish
+
+// Condition 2: Valid Entry Zone (FVG, Order Block, or EMA pullback)
+nearEMA21 = math.abs(close - emaMed) / close < 0.005
+bullishZone = inBullFVG or bullishOB or (nearEMA21 and close > emaMed)
+bearishZone = inBearFVG or bearishOB or (nearEMA21 and close < emaMed)
+
+// Condition 3: Momentum Confirmation
+bullishMomentum = (stochBullCross or (stochK > stochD and stochOversold[1])) and macdBullish and trendStrong
+bearishMomentum = (stochBearCross or (stochK < stochD and stochOverbought[1])) and macdBearish and trendStrong
+
+// Candlestick Confirmation
+bullishCandle = close > open and (close - open) > (high - low) * 0.5
+bearishCandle = close < open and (open - close) > (high - low) * 0.5
+
+// Volume Confirmation
+goodVolume = volSpike or volume > volSMA
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              RISK MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Swing Highs/Lows for SL
+swingLow = ta.lowest(low, 10)
+swingHigh = ta.highest(high, 10)
+
+// Calculate Stop Loss
+longSL = math.max(swingLow - atr * 0.3, close - atr * 1.5)
+shortSL = math.min(swingHigh + atr * 0.3, close + atr * 1.5)
+
+// Calculate Take Profits
+longRisk = close - longSL
+shortRisk = shortSL - close
+
+longTP1 = close + longRisk * i_tp1RR
+longTP2 = close + longRisk * i_tp2RR
+shortTP1 = close - shortRisk * i_tp1RR
+shortTP2 = close - shortRisk * i_tp2RR
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              TRADE MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Daily trade counter
+var int dailyTrades = 0
+var int lastTradeDay = 0
+var int consecutiveLosses = 0
+var bool pauseTrading = false
+
+currentDay = dayofmonth(time)
+
+if currentDay != lastTradeDay
+    dailyTrades := 0
+    lastTradeDay := currentDay
+    pauseTrading := false
+
+// Pause after 2 consecutive losses
+if consecutiveLosses >= 2
+    pauseTrading := true
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              FINAL ENTRY SIGNALS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// All conditions must be met
+canTrade = validTradingTime and volatilityOK and dailyTrades < i_maxTrades and not pauseTrading
+
+longCondition = canTrade and bullishBias and bullishZone and bullishMomentum and bullishCandle and goodVolume
+shortCondition = canTrade and bearishBias and bearishZone and bearishMomentum and bearishCandle and goodVolume
+
+// Prevent signal on consecutive bars
+longSignal = longCondition and not longCondition[1] and strategy.position_size == 0
+shortSignal = shortCondition and not shortCondition[1] and strategy.position_size == 0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              STRATEGY EXECUTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+if longSignal
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long TP1", "Long", qty_percent=40, limit=longTP1, stop=longSL)
+    strategy.exit("Long TP2", "Long", qty_percent=50, limit=longTP2, stop=longSL)
+    dailyTrades += 1
+    consecutiveLosses := 0
+
+if shortSignal
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short TP1", "Short", qty_percent=40, limit=shortTP1, stop=shortSL)
+    strategy.exit("Short TP2", "Short", qty_percent=50, limit=shortTP2, stop=shortSL)
+    dailyTrades += 1
+    consecutiveLosses := 0
+
+// Trailing stop for remaining position
+if i_useTrailing and strategy.position_size != 0
+    trailAmount = atr * i_trailATR
+    if strategy.position_size > 0
+        strategy.exit("Long Trail", "Long", trail_offset=trailAmount, trail_points=trailAmount)
+    else
+        strategy.exit("Short Trail", "Short", trail_offset=trailAmount, trail_points=trailAmount)
+
+// Session end close
+sessionEndTime = currentHour == 15 and currentMin >= 10
+if sessionEndTime and strategy.position_size != 0
+    strategy.close_all(comment="Session End")
+
+// Track losses
+if strategy.closedtrades > 0
+    lastTradeProfit = strategy.closedtrades.profit(strategy.closedtrades - 1)
+    if lastTradeProfit < 0
+        consecutiveLosses += 1
+    else
+        consecutiveLosses := 0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              VISUALIZATIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// EMAs
+plot(i_showEMA ? emaFast : na, "EMA Fast", color=color.new(color.blue, 60), linewidth=1)
+plot(i_showEMA ? emaMed : na, "EMA Medium", color=color.new(color.orange, 60), linewidth=1)
+plot(i_showEMA ? emaSlow : na, "EMA Slow", color=color.new(color.purple, 60), linewidth=2)
+plot(i_showEMA ? ema200 : na, "EMA 200", color=color.new(color.red, 50), linewidth=2)
+
+// SuperTrend
+stColor = stBullish ? color.new(color.green, 70) : color.new(color.red, 70)
+plot(i_showST ? supertrend : na, "SuperTrend", color=stColor, linewidth=2)
+
+// Signal markers
+plotshape(longSignal, "Buy", shape.triangleup, location.belowbar, color.new(color.green, 0), size=size.normal)
+plotshape(shortSignal, "Sell", shape.triangledown, location.abovebar, color.new(color.red, 0), size=size.normal)
+
+// Background
+bgcolor(longSignal ? color.new(color.green, 90) : shortSignal ? color.new(color.red, 90) : na)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//                              DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════════
+
+if i_showTable
+    var table dashboard = table.new(position.top_right, 2, 10, bgcolor=color.new(color.black, 30), border_width=1, border_color=color.gray)
+    
+    // Header
+    table.cell(dashboard, 0, 0, "TEP v3.0", text_color=color.white, text_size=size.small, bgcolor=color.new(color.blue, 50))
+    table.merge_cells(dashboard, 0, 0, 1, 0)
+    
+    // Trend
+    trendCol = strongBullTrend ? color.green : strongBearTrend ? color.red : color.gray
+    trendTxt = strongBullTrend ? "BULLISH" : strongBearTrend ? "BEARISH" : "NEUTRAL"
+    table.cell(dashboard, 0, 1, "Trend", text_color=color.gray, text_size=size.tiny)
+    table.cell(dashboard, 1, 1, trendTxt + " (" + str.tostring(trendScore) + ")", text_color=trendCol, text_size=size.tiny)
+    
+    // ADX
+    adxCol = trendStrong ? color.green : color.red
+    table.cell(dashboard, 0, 2, "ADX", text_color=color.gray, text_size=size.tiny)
+    table.cell(dashboard, 1, 2, str.tostring(adxValue, "#.#"), text_color=adxCol, text_size=size.tiny)
+    
+    // Stoch RSI
+    stochCol = stochOversold ? color.green : stochOverbought ? color.red : color.yellow
+    table.cell(dashboard, 0, 3, "StochRSI", text_color=color.gray, text_size=size.tiny)
+    table.cell(dashboard, 1, 3, str.tostring(stochK, "#.#"), text_color=stochCol, text_size=size.tiny)
+    
+    // Volatility
+    volCol = volatilityOK ? color.green : color.red
+    table.cell(dashboard, 0, 4, "ATR Ratio", text_color=color.gray, text_size=size.tiny)
+    table.cell(dashboard, 1, 4, str.tostring(atrRatio, "#.##"), text_color=volCol, text_size=size.tiny)
+    
+    // Session
+    sessionCol = validTradingTime ? color.green : color.red
+    sessionTxt = validTradingTime ? (isMorningSession ? "MORNING" : "ACTIVE") : "CLOSED"
+    table.cell(dashboard, 0, 5, "Session", text_color=color.gray, text_size=size.tiny)
+    table.cell(dashboard, 1, 5, sessionTxt, text_color=sessionCol, text_size=size.tiny)
+    
+    // Trades Today
+    table.cell(dashboard, 0, 6, "Trades", text_color=color.gray, text_size=size.tiny)
+    table.cell(dashboard, 1, 6, str.tostring(dailyTrades) + "/" + str.tostring(i_maxTrades), text_color=color.white, text_size=size.tiny)
+    
+    // Position
+    posCol = strategy.position_size > 0 ? color.green : strategy.position_size < 0 ? color.red : color.gray
+    posTxt = strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT"
+    table.cell(dashboard, 0, 7, "Position", text_color=color.gray, text_size=size.tiny)
+    table.cell(dashboard, 1, 7, posTxt, text_color=posCol, text_size=size.tiny)
+    
+    // P/L
+    plPct = strategy.openprofit / strategy.initial_capital * 100
+    plCol = plPct >= 0 ? color.green : color.red
+    table.cell(dashboard, 0, 8, "Open P/L", text_color=color.gray, text_size=size.tiny)
+    table.cell(dashboard, 1, 8, str.tostring(plPct, "#.##") + "%", text_color=plCol, text_size=size.tiny)
+    
+    // Status
+    statusCol = pauseTrading ? color.red : canTrade ? color.green : color.yellow
+    statusTxt = pauseTrading ? "PAUSED" : canTrade ? "READY" : "WAIT"
+    table.cell(dashboard, 0, 9, "Status", text_color=color.gray, text_size=size.tiny)
+    table.cell(dashboard, 1, 9, statusTxt, text_color=statusCol, text_size=size.tiny)
