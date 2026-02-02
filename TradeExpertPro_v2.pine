@@ -838,8 +838,7 @@ if not na(priceSwingLow)
     lastPriceLow := priceSwingLow
     lastRSILow := rsiForDiv[5]
 
-bullishDivergence = not na(lastPriceLow) and not na(prevPriceLow) and 
-                    lastPriceLow < prevPriceLow and lastRSILow > prevRSILow
+bullishDivergence = not na(lastPriceLow) and not na(prevPriceLow) and lastPriceLow < prevPriceLow and lastRSILow > prevRSILow
 
 // Bearish Divergence: Price HH, RSI LH
 var float lastPriceHigh = na
@@ -853,11 +852,9 @@ if not na(priceSwingHigh)
     lastPriceHigh := priceSwingHigh
     lastRSIHigh := rsiForDiv[5]
 
-bearishDivergence = not na(lastPriceHigh) and not na(prevPriceHigh) and 
-                    lastPriceHigh > prevPriceHigh and lastRSIHigh < prevRSIHigh
+bearishDivergence = not na(lastPriceHigh) and not na(prevPriceHigh) and lastPriceHigh > prevPriceHigh and lastRSIHigh < prevRSIHigh
 
-divergenceScore = bullishDivergence and mtfBias == BIAS_BULLISH ? 25 : 
-                  bearishDivergence and mtfBias == BIAS_BEARISH ? 25 : 0
+divergenceScore = bullishDivergence and mtfBias == BIAS_BULLISH ? 25 : bearishDivergence and mtfBias == BIAS_BEARISH ? 25 : 0
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //                              VISUALIZATIONS
